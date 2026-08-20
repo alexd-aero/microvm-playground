@@ -184,14 +184,21 @@ function renderHost(h) {
   const bad = mock || h.problems.length > 0;
   chip.className = 'chip ' + (bad ? 'warn' : 'ok');
 
-  let label = h.mode;
+  // Every backend gets an explicit case. Never let an unrecognised mode fall
+  // through to a label claiming to be something else.
+  let label;
   if (h.mode === 'qemu') {
     const ver = (h.qemu || '').match(/version\s+([\d.]+)/);
     label = 'qemu' + (ver ? ' ' + ver[1] : '') + (h.accel ? ' · ' + h.accel : '');
   } else if (h.mode === 'firecracker') {
     label = 'firecracker' + (h.firecracker ? ' ' + h.firecracker.replace(/^.*?(v[\d.]+).*$/, '$1') : '');
-  } else {
+  } else if (h.mode === 'container') {
+    const ver = (h.qemu || '').match(/([\d.]+)$/);   // docker/podman version
+    label = 'container' + (ver ? ' · docker ' + ver[1] : '') + ' · native';
+  } else if (h.mode === 'mock') {
     label = 'mock mode';
+  } else {
+    label = h.mode || 'unknown backend';
   }
   chip.innerHTML = `<i class="dot ${bad ? 'dot-warn' : 'dot-live'}"></i><span>${escape(label)}</span>`;
 

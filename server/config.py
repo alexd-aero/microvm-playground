@@ -14,10 +14,24 @@ def _p(name: str, default: str) -> Path:
 
 
 # --- filesystem layout -------------------------------------------------------
-# /var/lib means nothing on Windows, so follow the platform.
-_DEFAULT_STATE = (os.path.expandvars(r"%LOCALAPPDATA%\mvmp") if WINDOWS
-                  else "/var/lib/mvmp")
-STATE_DIR = _p("MVMP_STATE_DIR", _DEFAULT_STATE)
+def _default_state_dir() -> str:
+    """Somewhere we can actually write.
+
+    /var/lib means nothing on Windows, and on Linux it is only writable by
+    root -- which is wrong for the container and QEMU backends, since neither
+    needs privileges. Fall back to the user's own data directory rather than
+    crashing at startup with EACCES.
+    """
+    if WINDOWS:
+        return os.path.expandvars(r"%LOCALAPPDATA%\mvmp")
+    if os.access("/var/lib", os.W_OK):
+        return "/var/lib/mvmp"
+    xdg = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(xdg, "mvmp")
+
+
+STATE_DIR = _p("MVMP_STATE_DIR", _default_state_dir())
 IMAGES_DIR = STATE_DIR / "images"
 VMS_DIR = STATE_DIR / "vms"
 

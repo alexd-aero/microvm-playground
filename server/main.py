@@ -19,8 +19,16 @@ manager = Manager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if manager.backend != "mock":
-        C.VMS_DIR.mkdir(parents=True, exist_ok=True)
+    # Only the backends that keep per-VM files on disk need a state directory.
+    # Containers store nothing, and failing to create a directory it will never
+    # use should not stop the server from starting.
+    if manager.backend in ("firecracker", "qemu"):
+        try:
+            C.VMS_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                "cannot create the state directory %s (%s). Set MVMP_STATE_DIR "
+                "to a writable path." % (C.VMS_DIR, exc)) from exc
     await manager.start_reaper()
     try:
         yield

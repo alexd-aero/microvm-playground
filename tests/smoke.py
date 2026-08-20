@@ -56,31 +56,69 @@ class Shell:
         self.replacements = 0
         self.chunks = 0
 
-    async def pump(self, seconds):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
+    def _absorb(self, msg):
+        if isinstance(msg, bytes):
+            self.chunks += 1
+            piece = self.dec.decode(msg)
+            self.replacements += piece.count("�")
+            self.text += piece
+
+    async def _read(self, done, timeout, idle=0.4):
+        """Read until `done(text)`, or until the stream goes quiet, or timeout.
+
+        Returning on the *condition* rather than always draining the full
+        window is what keeps the suite to seconds: a command that finishes in
+        30 ms should not cost its 30 s budget.
+        """
+        end = time.monotonic() + timeout
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                msg = await asyncio.wait_for(self.ws.recv(), timeout=end - time.monotonic())
+                msg = await asyncio.wait_for(self.ws.recv(), timeout=min(idle, remaining))
+            except asyncio.TimeoutError:
+                if done(ANSI.sub("", self.text)):     # quiet and satisfied
+                    return True
+                continue
+            except Exception:
+                break
+            self._absorb(msg)
+            if done(ANSI.sub("", self.text)):
+                return True
+        return done(ANSI.sub("", self.text))
+
+    async def pump(self, seconds, idle=0.4):
+        """Drain output until it goes quiet for `idle`, or `seconds` elapse."""
+        end = time.monotonic() + seconds
+        seen = False
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                msg = await asyncio.wait_for(self.ws.recv(), timeout=min(idle, remaining))
+            except asyncio.TimeoutError:
+                if seen:
+                    return
+                continue
             except Exception:
                 return
-            if isinstance(msg, bytes):
-                self.chunks += 1
-                piece = self.dec.decode(msg)
-                self.replacements += piece.count("�")
-                self.text += piece
+            self._absorb(msg)
+            seen = True
+
+    @staticmethod
+    def _at_prompt(text):
+        return bool(PROMPT.search(text[-400:]))
 
     async def wait_prompt(self, timeout):
-        end = time.monotonic() + timeout
-        while time.monotonic() < end:
-            await self.pump(2)
-            if PROMPT.search(ANSI.sub("", self.text)[-500:]):
-                return True
-        return False
+        return await self._read(self._at_prompt, timeout)
 
     async def run(self, cmd, wait=25):
         self.text = ""
         await self.ws.send((cmd + "\n").encode())
-        await self.pump(wait)
+        # The command is finished when the shell prints its prompt again.
+        await self._read(self._at_prompt, wait)
         clean = ANSI.sub("", self.text)
         out = []
         for line in clean.splitlines():

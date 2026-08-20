@@ -1,0 +1,33 @@
+{
+  "name": "microvm playground",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+
+  // Codespaces does not expose /dev/kvm, so no VM backend can be hardware
+  // accelerated here. Docker-in-docker gives the container backend instead:
+  // native CPU speed and millisecond startup.
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "microvm playground",
+      "onAutoForward": "openPreview"
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}

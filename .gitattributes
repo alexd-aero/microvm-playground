@@ -1,0 +1,16 @@
+# Normalise to LF in the repository. Without this, committing from Windows can
+# ship CRLF shell scripts, which fail on Linux with "bad interpreter: ^M".
+* text=auto eol=lf
+
+*.sh      text eol=lf
+Dockerfile text eol=lf
+*.py      text eol=lf
+*.yml     text eol=lf
+*.json    text eol=lf
+
+# PowerShell stays CRLF: it is only ever run on Windows.
+*.ps1     text eol=crlf
+
+*.qcow2   binary
+*.ext4    binary
+*.iso     binary

@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  container-backend:
+    name: container backend (end-to-end)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Report host capabilities
+        run: |
+          echo "kvm:    $([ -e /dev/kvm ] && echo present || echo 'absent (as in Codespaces)')"
+          echo "docker: $(docker version --format '{{.Server.Version}}')"
+
+      - name: Build the playground image
+        run: docker build -t mvmp-playground:latest docker/
+
+      - name: Start the server
+        env:
+          MVMP_BACKEND: container
+        run: |
+          python run_server.py --host 127.0.0.1 --port 8080 > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8080/api/host >/dev/null && break
+            sleep 1
+          done
+
+      - name: Smoke test
+        run: python tests/smoke.py --url http://127.0.0.1:8080 --expect-backend container --boot-budget-ms 5000
+
+      - name: Server log
+        if: always()
+        run: tail -50 server.log || true
+
+      - name: Stop the server
+        if: always()
+        run: kill "$(cat server.pid)" 2>/dev/null || true
+
+  static-checks:
+    name: syntax + import checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Compile all sources (warnings are errors)
+        run: python -W error::SyntaxWarning -m compileall -q server tools tests run_server.py
+      - name: Import every backend module
+        run: |
+          python - <<'PY'
+          import importlib
+          for m in ("server.config", "server.models", "server.console", "server.manager",
+                    "server.container", "server.qemu", "server.firecracker",
+                    "server.mock", "server.net", "server.images", "server.main"):
+              importlib.import_module(m)
+              print("ok", m)
+          PY
+      - name: Shell script syntax
+        run: bash -n run.sh setup.sh .devcontainer/post-create.sh
+      - name: devcontainer.json is valid JSONC
+        run: |
+          python - <<'PY'
+          import json, re, pathlib
+          raw = pathlib.Path(".devcontainer/devcontainer.json").read_text()
+          stripped = re.sub(r"^\s*//.*$", "", raw, flags=re.M)
+          json.loads(stripped)
+          print("devcontainer.json parses")
+          PY

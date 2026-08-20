@@ -82,8 +82,15 @@ class Shell:
         await self.ws.send((cmd + "\n").encode())
         await self.pump(wait)
         clean = ANSI.sub("", self.text)
-        lines = [l.rstrip() for l in clean.splitlines() if l.strip()]
-        return "\n".join(l for l in lines if cmd not in l and not PROMPT.search(l))
+        out = []
+        for line in clean.splitlines():
+            # Strip a trailing prompt rather than dropping the whole line:
+            # output without a trailing newline (curl -w, printf -n) shares a
+            # line with the next prompt, and deleting it loses the result.
+            line = PROMPT.sub("", line).rstrip()
+            if line.strip() and cmd not in line:
+                out.append(line)
+        return "\n".join(out)
 
 
 async def main():
@@ -163,8 +170,15 @@ async def main():
 
         # real outbound internet from inside the playground
         out = await sh.run(
-            "curl -s -o /dev/null -w 'HTTP:%{http_code}' https://deb.debian.org/ || echo NONET", 60)
-        check("outbound internet works", "HTTP:200" in out, out[:120])
+            r"curl -s -o /dev/null -w 'HTTP:%{http_code}\n' https://deb.debian.org/ "
+            r"|| echo NONET:$?", 60)
+        if not check("outbound internet works", "HTTP:200" in out, repr(out[:200])):
+            # Distinguish DNS failure from routing failure -- they need
+            # different fixes, and "no internet" alone does not say which.
+            diag = await sh.run("getent hosts deb.debian.org || echo DNS-FAIL", 30)
+            print("      dns: %s" % (diag.strip()[:100] or "(no output)"))
+            diag = await sh.run("ip route 2>/dev/null | head -2 || echo NO-ROUTE", 20)
+            print("      route: %s" % (diag.strip()[:100] or "(no output)"))
 
         # UTF-8 and colour integrity across the byte stream
         before = sh.replacements

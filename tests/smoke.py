@@ -252,6 +252,52 @@ async def main():
         check("reattach is clean", not re.search(r";\d+R|syntax error", clean),
               [l for l in clean.splitlines() if re.search(r";\d+R|syntax error", l)][:2])
 
+    # ----------------------------------------------------------- ttyd proxy
+    if host.get("terminal") == "ttyd":
+        print("\n\033[1mttyd\033[0m")
+        path = vm.get("terminal_url")
+        check("playground exposes a terminal url",
+              bool(path) and path.startswith("/terminal/"), str(path))
+        if path:
+            page = urllib.request.urlopen(args.url + path, timeout=30)
+            body = page.read().decode("utf-8", "replace")
+            check("ttyd page proxies", page.status == 200 and "ttyd" in body.lower(),
+                  "status=%s len=%d" % (page.status, len(body)))
+
+            # Drive ttyd's own protocol through the proxy: auth frame first,
+            # then '0'-prefixed input. Anything coming back proves the whole
+            # chain -- proxy -> ttyd -> attach.py -> console hub -> guest.
+            ws_path = args.url.replace("http://", "ws://").replace("https://", "wss://")
+            try:
+                async with websockets.connect(ws_path + path.rstrip("/") + "/ws",
+                                              subprotocols=["tty"], max_size=None,
+                                              open_timeout=30) as tws:
+                    await tws.send(json.dumps({"AuthToken": ""}))
+                    await asyncio.sleep(1.5)
+                    await tws.send(b"0" + b"echo TTYD-CHAIN-OK\n")
+                    seen, end = b"", time.monotonic() + 25
+                    while time.monotonic() < end:
+                        try:
+                            m = await asyncio.wait_for(tws.recv(), timeout=2)
+                        except asyncio.TimeoutError:
+                            if b"TTYD-CHAIN-OK" in seen:
+                                break
+                            continue
+                        except Exception:
+                            break
+                        if isinstance(m, str):
+                            m = m.encode()
+                        seen += m
+                        if b"TTYD-CHAIN-OK" in seen:
+                            break
+                    check("ttyd websocket carries the guest",
+                          b"TTYD-CHAIN-OK" in seen, repr(seen[-160:]))
+            except Exception as exc:
+                check("ttyd websocket carries the guest", False, repr(exc))
+    else:
+        print("\n\033[1mttyd\033[0m\n  \033[33mskipped\033[0m  terminal=%s"
+              % host.get("terminal"))
+
     # ------------------------------------------------------------- destroy
     print("\n\033[1mteardown\033[0m")
     for v in (vm, vm2):

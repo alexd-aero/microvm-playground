@@ -11,12 +11,7 @@
 <body>
 
 <!-- ambient background -->
-<div class="bg" aria-hidden="true">
-  <span class="blob b1"></span>
-  <span class="blob b2"></span>
-  <span class="blob b3"></span>
-  <span class="grid-lines"></span>
-</div>
+<div class="bg" aria-hidden="true"></div>
 
 <header class="topbar glass">
   <div class="brand">
@@ -43,7 +38,7 @@
 <main class="layout">
 
   <!-- ─────────────── create panel ─────────────── -->
-  <section class="panel glass" aria-labelledby="createTitle">
+  <section class="panel" aria-labelledby="createTitle">
     <div class="panel-head">
       <h2 id="createTitle">New playground</h2>
       <span class="badge" id="presetBadge">lean</span>
@@ -125,7 +120,7 @@
       </button>
     </div>
     <div class="grid" id="vmGrid"></div>
-    <div class="empty glass" id="empty">
+    <div class="empty" id="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M12.5 15h4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <p>No playgrounds yet</p>
       <span>Pick your specs and launch one — it boots in about a tenth of a second.</span>
@@ -135,7 +130,7 @@
 
 <!-- ─────────────── console ─────────────── -->
 <div class="overlay" id="overlay" hidden>
-  <div class="console glass" role="dialog" aria-modal="true" aria-label="VM console">
+  <div class="console" role="dialog" aria-modal="true" aria-label="VM console">
     <div class="console-head">
       <div class="console-title">
         <i class="dot dot-live" id="consoleDot"></i>
@@ -154,7 +149,11 @@
         </button>
       </div>
     </div>
-    <div class="term-wrap"><div id="term"></div></div>
+    <div class="term-wrap" id="termWrap">
+      <iframe id="ttydFrame" title="Playground terminal" hidden
+              allow="clipboard-read; clipboard-write"></iframe>
+      <div id="term"></div>
+    </div>
     <div class="console-foot">
       <span id="consoleStatus">connecting…</span>
       <span class="foot-hint">UTF-8 · xterm-256color · truecolor — try <code>colortest</code>, <code>unicode</code>, <code>fetch</code></span>

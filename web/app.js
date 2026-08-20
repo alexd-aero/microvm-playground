@@ -113,7 +113,7 @@ function cardHTML(vm) {
   const ttl = vm.expires_at ? fmtDuration(vm.expires_at - Date.now() / 1000) : 'never';
   const live = vm.state === 'running';
   return `
-  <article class="card glass ${vm.state === 'error' ? 'is-error' : ''}" data-id="${vm.id}">
+  <article class="card ${vm.state === 'error' ? 'is-error' : ''}" data-id="${vm.id}">
     <div class="card-head">
       <div class="card-name">
         <i class="dot ${live ? 'dot-live' : vm.state === 'error' ? 'dot-bad' : 'dot-warn'}"></i>
@@ -144,7 +144,8 @@ function cardHTML(vm) {
    selection, so only redraw when something actually changed. The live counters
    are updated in place by tickTimers(). */
 function signature(vms) {
-  return vms.map((v) => [v.id, v.state, v.ip, v.boot_ms, v.expires_at, v.error].join('~')).join('|');
+  return vms.map((v) => [v.id, v.state, v.ip, v.boot_ms, v.expires_at, v.error,
+                        v.terminal_url].join('~')).join('|');
 }
 
 function render(force) {
@@ -211,6 +212,13 @@ function renderHost(h) {
   const memIdx = MEM_STEPS.indexOf(h.defaults.mem_mib);
   if (memIdx >= 0) $('#mem').value = memIdx;
   updateForm();
+
+  const foot = $('.foot-hint');
+  if (foot) {
+    foot.innerHTML = h.terminal === 'ttyd'
+      ? `terminal: <code>${escape((h.ttyd || 'ttyd').split(' ').slice(0, 2).join(' '))}</code> · UTF-8 · truecolor`
+      : 'terminal: <code>built-in</code> · UTF-8 · xterm-256color · truecolor';
+  }
 
   const box = $('#warnings');
   const rows = h.problems.map((p) => `<div class="warn-item"><b>!</b><span>${escape(p)}</span></div>`)
@@ -288,6 +296,34 @@ function openConsole(id) {
   $('#consoleSpecs').innerHTML = vm
     ? `<span class="spec"><b>${vm.vcpus}</b> vCPU</span><span class="spec"><b>${fmtMem(vm.mem_mib)}</b></span><span class="spec">${vm.ip || ''}</span>`
     : '';
+  state.open = id;
+
+  // ttyd serves the terminal wherever it is installed; the built-in xterm.js
+  // console is the fallback, and stays the transport ttyd's bridge rides on.
+  if (vm && vm.terminal_url) return openTtyd(vm);
+  openBuiltin(id);
+}
+
+function openTtyd(vm) {
+  const frame = $('#ttydFrame');
+  $('#term').hidden = true;
+  $('#termWrap').classList.add('is-ttyd');
+  frame.hidden = false;
+  // Reload even for the same playground, so Reconnect gives a fresh shell.
+  frame.src = vm.terminal_url + '?t=' + Date.now();
+  $('#btnClear').hidden = true;
+  $('#consoleStatus').textContent = 'ttyd';
+  $('#consoleDot').className = 'dot dot-live';
+  if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+  setTimeout(() => { try { frame.contentWindow.focus(); } catch (e) {} }, 200);
+}
+
+function openBuiltin(id) {
+  $('#ttydFrame').hidden = true;
+  $('#ttydFrame').removeAttribute('src');
+  $('#termWrap').classList.remove('is-ttyd');
+  $('#term').hidden = false;
+  $('#btnClear').hidden = false;
 
   if (!state.term) {
     const made = makeTerm();
@@ -316,7 +352,6 @@ function openConsole(id) {
     window.addEventListener('resize', () => { if (!$('#overlay').hidden) safeFit(); });
   }
 
-  state.open = id;
   state.term.reset();
   safeFit();
   connectWS(id);
@@ -359,8 +394,17 @@ function connectWS(id) {
 
 function closeConsole() {
   $('#overlay').hidden = true;
+  // Dropping the src tears down ttyd's client, which ends its bridge process
+  // -- otherwise a closed dialog would keep a shell (and its CPU) alive.
+  const frame = $('#ttydFrame');
+  frame.hidden = true;
+  frame.removeAttribute('src');
   if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
   state.open = null;
+}
+
+function usingTtyd() {
+  return !$('#ttydFrame').hidden;
 }
 
 /* ── wiring ─────────────────────────────────────────────────────── */
@@ -400,8 +444,17 @@ function init() {
   });
 
   $('#btnCloseConsole').addEventListener('click', closeConsole);
-  $('#btnClear').addEventListener('click', () => { state.term && state.term.clear(); state.term && state.term.focus(); });
-  $('#btnReconnect').addEventListener('click', () => { if (state.open) { state.term.reset(); connectWS(state.open); } });
+  $('#btnClear').addEventListener('click', () => {
+    if (usingTtyd()) return;             // ttyd handles Ctrl+L natively
+    if (state.term) { state.term.clear(); state.term.focus(); }
+  });
+  $('#btnReconnect').addEventListener('click', () => {
+    if (!state.open) return;
+    const vm = state.vms.find((v) => v.id === state.open);
+    if (vm && vm.terminal_url) return openTtyd(vm);
+    state.term.reset();
+    connectWS(state.open);
+  });
   $('#overlay').addEventListener('mousedown', (e) => { if (e.target === $('#overlay')) closeConsole(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#overlay').hidden) closeConsole(); });
 

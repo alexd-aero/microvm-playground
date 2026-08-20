@@ -32,12 +32,12 @@ jobs:
           import importlib
           for m in ("server.config", "server.models", "server.console", "server.manager",
                     "server.container", "server.qemu", "server.firecracker",
-                    "server.mock", "server.net", "server.images", "server.main"):
+                    "server.mock", "server.net", "server.images", "server.ttyd", "server.main"):
               importlib.import_module(m)
               print("ok", m)
           PY
       - name: Shell script syntax
-        run: bash -n run.sh setup.sh .devcontainer/post-create.sh
+        run: bash -n run.sh setup.sh .devcontainer/post-create.sh tools/get-ttyd.sh
       - name: devcontainer.json is valid JSONC
         run: |
           python - <<'PY'
@@ -80,6 +80,11 @@ jobs:
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install ttyd
+        run: |
+          bash tools/get-ttyd.sh
+          ttyd --version
 
       - name: Start the server
         timeout-minutes: 2

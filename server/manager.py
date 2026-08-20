@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config as C
+from . import ttyd as _ttyd
 from .models import TTL_CHOICES, CreateVM, HostInfo, VMView
 
 ADJECTIVES = ["brisk", "amber", "quiet", "lucid", "nimble", "vivid", "candid",
@@ -97,7 +98,20 @@ class Record:
             ip=getattr(self.vm, "ip", None), gateway=getattr(self.vm, "gateway", None),
             created_at=self.created_at, boot_ms=getattr(self.vm, "boot_ms", None),
             expires_at=self.expires_at, error=self.error,
+            terminal_url=self.terminal_url,
         )
+
+    @property
+    def terminal_url(self) -> Optional[str]:
+        """Same-origin path to this playground's ttyd, when ttyd is serving.
+
+        A path rather than a URL on purpose: the proxy keeps everything on the
+        one port, which is what makes it reachable through Codespaces port
+        forwarding.
+        """
+        from . import ttyd
+        sess = ttyd.get(self.id)
+        return sess.base_path + "/" if sess and sess.alive else None
 
 
 class Manager:
@@ -209,6 +223,8 @@ class Manager:
                 "disk_gb": max(C.DEFAULT_DISK_GB, self.min_disk_gb()),
             },
             problems=problems, notes=notes,
+            terminal="ttyd" if _ttyd.available() else "builtin",
+            ttyd=_ttyd.version(),
         )
 
     # ----------------------------------------------------------------- create
@@ -250,6 +266,10 @@ class Manager:
             rec.vm = self._make_vm(vm_id, slot, spec, name)
             await rec.vm.start()
             rec.state = "running"
+            # ttyd serves the terminal where it exists; the built-in console
+            # websocket stays as the fallback (and as ttyd's own transport).
+            from . import ttyd
+            await asyncio.to_thread(ttyd.start_for, vm_id, C.RUNTIME_PORT)
         except Exception as exc:
             rec.state = "error"
             rec.error = str(exc)
@@ -265,6 +285,9 @@ class Manager:
         if rec is None:
             return False
         rec.state = "stopping"
+        from . import ttyd
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(ttyd.stop_for, vm_id)
         with contextlib.suppress(Exception):
             if rec.vm is not None:
                 await rec.vm.stop()
@@ -306,6 +329,9 @@ class Manager:
     async def shutdown(self) -> None:
         if self._reaper:
             self._reaper.cancel()
+        from . import ttyd
+        with contextlib.suppress(Exception):
+            ttyd.stop_all()
         for vm_id in list(self._vms):
             await self.destroy(vm_id)
         if self.backend == "container":

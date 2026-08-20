@@ -9,6 +9,9 @@ c '1;36' "==> Installing Python dependencies"
 pip install --quiet --disable-pip-version-check -r requirements.txt
 c '32' "    ok"
 
+c '1;36' "==> Installing ttyd (the terminal)"
+bash tools/get-ttyd.sh >/dev/null 2>&1 && c '32' "    ok  $(ttyd --version 2>&1 | head -1)"   || c '33' "    !   ttyd unavailable; falling back to the built-in terminal"
+
 c '1;36' "==> Building the playground image"
 docker build -q -t "${MVMP_IMAGE_TAG:-mvmp-playground:latest}" docker/ >/dev/null
 c '32' "    ok  $(docker image inspect --format '{{.Size}}' "${MVMP_IMAGE_TAG:-mvmp-playground:latest}" | awk '{printf "%.0f MB", $1/1048576}')"

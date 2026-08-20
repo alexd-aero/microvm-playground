@@ -62,6 +62,16 @@ CONTAINER_IMAGE = os.environ.get("MVMP_IMAGE_TAG", "mvmp-playground:latest")
 CONTAINER_POOL = max(0, int(os.environ.get("MVMP_POOL", "2")))
 CONTAINER_PIDS_LIMIT = int(os.environ.get("MVMP_PIDS_LIMIT", "512"))
 
+# --- terminal ----------------------------------------------------------------
+# ttyd serves the terminal wherever it is installed. Windows keeps the built-in
+# xterm.js console, because ttyd's bridge needs a POSIX pty.
+TTYD_BIN = os.environ.get("MVMP_TTYD", "ttyd")
+TTYD_MAX_CLIENTS = int(os.environ.get("MVMP_TTYD_CLIENTS", "8"))
+USE_TTYD = os.environ.get("MVMP_TTYD_ENABLE", "auto").lower()   # auto | on | off
+
+# Set at startup so ttyd can point its bridge back at us.
+RUNTIME_PORT = int(os.environ.get("MVMP_PORT", "8080"))
+
 # --- server ------------------------------------------------------------------
 # Codespaces forwards ports from inside the container, so bind all interfaces
 # there. The forwarded port is private to the user unless they publish it.

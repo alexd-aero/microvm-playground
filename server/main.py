@@ -6,11 +6,14 @@ import json
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import httpx
+import websockets as wsclient
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config as C
+from . import ttyd
 from .manager import Manager
 from .models import CreateVM
 
@@ -116,6 +119,104 @@ async def console(ws: WebSocket, vm_id: str):
         hub.unsubscribe(queue)
 
 
+# --- ttyd reverse proxy -------------------------------------------------------
+# Each playground runs its own ttyd on a private localhost port. Proxying them
+# under /terminal/<id> keeps everything on the single server port, which is the
+# only way this works behind Codespaces port forwarding -- per-VM ports could
+# not be forwarded individually.
+
+# Headers that describe *this* connection and must not be relayed onto another.
+_HOP_BY_HOP = {
+    "connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer",
+    "proxy-authenticate", "proxy-authorization",
+    # httpx has already decoded the body, so the upstream framing headers lie.
+    "content-length", "content-encoding",
+}
+
+
+def _session_or_404(vm_id: str):
+    sess = ttyd.get(vm_id)
+    if sess is None or not sess.alive:
+        raise HTTPException(status_code=404, detail="no terminal for this playground")
+    return sess
+
+
+async def _proxy_http(vm_id: str, tail: str, request: Request) -> Response:
+    sess = _session_or_404(vm_id)
+    url = "http://%s%s%s" % (sess.upstream, sess.base_path, tail)
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+        upstream = await client.request(
+            request.method, url,
+            params=dict(request.query_params),
+            content=await request.body(),
+            headers={k: v for k, v in request.headers.items()
+                     if k.lower() not in _HOP_BY_HOP and k.lower() != "host"},
+        )
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers={k: v for k, v in upstream.headers.items()
+                 if k.lower() not in _HOP_BY_HOP},
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+@app.websocket("/terminal/{vm_id}/ws")
+async def terminal_ws(ws: WebSocket, vm_id: str):
+    sess = ttyd.get(vm_id)
+    if sess is None or not sess.alive:
+        await ws.close(code=4404)
+        return
+
+    # ttyd speaks its own "tty" subprotocol; the handshake fails without it.
+    offered = ws.scope.get("subprotocols") or []
+    await ws.accept(subprotocol="tty" if "tty" in offered else None)
+
+    url = "ws://%s%s/ws" % (sess.upstream, sess.base_path)
+    try:
+        async with wsclient.connect(url, subprotocols=["tty"], max_size=None,
+                                    open_timeout=20, ping_interval=None) as up:
+            async def downstream_to_upstream():
+                while True:
+                    msg = await ws.receive()
+                    if msg["type"] == "websocket.disconnect":
+                        return
+                    if msg.get("bytes") is not None:
+                        await up.send(msg["bytes"])
+                    elif msg.get("text") is not None:
+                        await up.send(msg["text"])
+
+            async def upstream_to_downstream():
+                async for msg in up:
+                    if isinstance(msg, bytes):
+                        await ws.send_bytes(msg)
+                    else:
+                        await ws.send_text(msg)
+
+            tasks = [asyncio.create_task(downstream_to_upstream()),
+                     asyncio.create_task(upstream_to_downstream())]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+    except (WebSocketDisconnect, ConnectionError, OSError):
+        pass
+    except Exception:
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+
+@app.api_route("/terminal/{vm_id}", methods=["GET", "HEAD"])
+async def terminal_root(vm_id: str, request: Request):
+    return await _proxy_http(vm_id, "/", request)
+
+
+@app.api_route("/terminal/{vm_id}/{tail:path}", methods=["GET", "HEAD", "POST"])
+async def terminal_path(vm_id: str, tail: str, request: Request):
+    return await _proxy_http(vm_id, "/" + tail, request)
+
+
 # --- static UI (mounted last so /api wins) -----------------------------------
 @app.get("/")
 async def index():
@@ -132,6 +233,10 @@ def main() -> None:
     ap.add_argument("--host", default=C.BIND_HOST)
     ap.add_argument("--port", type=int, default=C.BIND_PORT)
     args = ap.parse_args()
+
+    # ttyd's bridge dials back into this server, so it needs the port we
+    # actually bound -- not the default.
+    C.RUNTIME_PORT = args.port
 
     if args.mock:
         os.environ["MVMP_MOCK"] = "1"

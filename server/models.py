@@ -35,6 +35,7 @@ class VMView(BaseModel):
     boot_ms: Optional[int] = None
     expires_at: Optional[float] = None
     error: Optional[str] = None
+    terminal_url: Optional[str] = None    # ttyd path, when ttyd is serving
 
 
 class HostInfo(BaseModel):
@@ -52,3 +53,5 @@ class HostInfo(BaseModel):
     defaults: dict
     problems: list[str] = []
     notes: list[str] = []
+    terminal: str = "builtin"             # ttyd | builtin
+    ttyd: Optional[str] = None

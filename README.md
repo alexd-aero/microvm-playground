@@ -29,6 +29,24 @@ instead: it runs directly on the host CPU, so it is both native speed and
 millisecond startup. The cost is a shared kernel, which is a weaker boundary
 than a VM. That trade is stated in the UI, not hidden.
 
+## The terminal
+
+[ttyd](https://github.com/tsl0922/ttyd) serves the terminal wherever it is
+installed. Each playground gets its own ttyd bound to localhost, and the
+application reverse-proxies it under `/terminal/<id>` -- so only the single
+server port is ever exposed, which is what makes it work behind Codespaces port
+forwarding. Per-VM ports could not be forwarded individually.
+
+ttyd runs `tools/attach.py`, a small bridge from the pty ttyd provides to the
+playground's console websocket. One bridge covers every backend, and since ttyd
+starts a fresh command per browser connection, several viewers can attach at
+once without fighting over one serial line.
+
+`ttyd` is a native binary with no practical Windows build, so **Windows keeps
+the built-in xterm.js console**. Deleting it would have broken the QEMU path on
+the very machine this was developed on. The UI states which terminal is in use;
+`MVMP_TTYD_ENABLE=off` forces the built-in one everywhere.
+
 ## Backends
 
 Selected automatically by *readiness*, not just capability; override with
@@ -159,6 +177,9 @@ The default package list is deliberately lean for that reason.
 | `MVMP_MAX_VMS` | `32` | concurrent playground cap |
 | `MVMP_POOL` | `2` | warm containers kept ready (container backend) |
 | `MVMP_IMAGE_TAG` | `mvmp-playground:latest` | container image to run |
+| `MVMP_TTYD` | `ttyd` | ttyd binary to use |
+| `MVMP_TTYD_ENABLE` | `auto` | `auto`, `on`, or `off` to force the built-in terminal |
+| `MVMP_TTYD_CLIENTS` | `8` | max simultaneous viewers per playground |
 
 A playground's disk can never be smaller than the golden image it clones —
 qcow2 overlays inherit their backing file's virtual size. The server computes
@@ -203,6 +224,7 @@ until you run `growpart /dev/vda 1 && resize2fs /dev/vda1` inside it.
 server/
   main.py         FastAPI routes + console websocket
   container.py    Docker backend with a warm pool (Codespaces path)
+  ttyd.py         one ttyd per playground + the reverse-proxy plumbing
   manager.py      backend selection, registry, TTL reaper, host probe
   qemu.py         QEMU process, serial/QMP over TCP, qcow2 overlays
   firecracker.py  VMM process, API-over-unix-socket, pty console

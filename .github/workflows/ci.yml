@@ -6,60 +6,23 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push makes an older run pointless: cancel it rather than queueing
+# two slow builds behind each other.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  container-backend:
-    name: container backend (end-to-end)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Report host capabilities
-        run: |
-          echo "kvm:    $([ -e /dev/kvm ] && echo present || echo 'absent (as in Codespaces)')"
-          echo "docker: $(docker version --format '{{.Server.Version}}')"
-
-      - name: Build the playground image
-        run: docker build -t mvmp-playground:latest docker/
-
-      - name: Start the server
-        env:
-          MVMP_BACKEND: container
-        run: |
-          python run_server.py --host 127.0.0.1 --port 8080 > server.log 2>&1 &
-          echo $! > server.pid
-          for i in $(seq 1 60); do
-            curl -sf http://127.0.0.1:8080/api/host >/dev/null && break
-            sleep 1
-          done
-
-      - name: Smoke test
-        run: python tests/smoke.py --url http://127.0.0.1:8080 --expect-backend container --boot-budget-ms 5000
-
-      - name: Server log
-        if: always()
-        run: tail -50 server.log || true
-
-      - name: Stop the server
-        if: always()
-        run: kill "$(cat server.pid)" 2>/dev/null || true
-
   static-checks:
     name: syntax + import checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - run: pip install -r requirements.txt
       - name: Compile all sources (warnings are errors)
         run: python -W error::SyntaxWarning -m compileall -q server tools tests run_server.py
@@ -80,7 +43,69 @@ jobs:
           python - <<'PY'
           import json, re, pathlib
           raw = pathlib.Path(".devcontainer/devcontainer.json").read_text()
-          stripped = re.sub(r"^\s*//.*$", "", raw, flags=re.M)
-          json.loads(stripped)
+          json.loads(re.sub(r"^\s*//.*$", "", raw, flags=re.M))
           print("devcontainer.json parses")
           PY
+
+  container-backend:
+    name: container backend (end-to-end)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Report host capabilities
+        run: |
+          echo "kvm:    $([ -e /dev/kvm ] && echo present || echo 'absent (as in Codespaces)')"
+          echo "docker: $(docker version --format '{{.Server.Version}}')"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The image is ~25 apt packages, which is ~4 minutes from cold. Layer
+      # caching turns every run after the first into a few seconds.
+      - name: Build the playground image
+        uses: docker/build-push-action@v6
+        timeout-minutes: 8
+        with:
+          context: docker
+          tags: mvmp-playground:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the server
+        timeout-minutes: 2
+        env:
+          MVMP_BACKEND: container
+        run: |
+          python run_server.py --host 127.0.0.1 --port 8080 > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/api/host >/dev/null; then
+              echo "server up after ${i}s"
+              curl -s http://127.0.0.1:8080/api/host | python -m json.tool | head -12
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server never came up:"; cat server.log; exit 1
+
+      - name: Smoke test
+        timeout-minutes: 5
+        run: python tests/smoke.py --url http://127.0.0.1:8080 --expect-backend container --boot-budget-ms 5000
+
+      - name: Server log
+        if: always()
+        run: tail -50 server.log || true
+
+      - name: Stop the server
+        if: always()
+        run: kill "$(cat server.pid)" 2>/dev/null || true

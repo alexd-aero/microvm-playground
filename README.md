@@ -22,12 +22,15 @@ playground image; then:
 
 Port 8080 forwards automatically.
 
-Codespaces does **not** expose `/dev/kvm`, so no VM backend can be hardware
-accelerated there — QEMU would fall back to instruction-by-instruction
-emulation, which is the opposite of fast. The container backend is selected
-instead: it runs directly on the host CPU, so it is both native speed and
-millisecond startup. The cost is a shared kernel, which is a weaker boundary
-than a VM. That trade is stated in the UI, not hidden.
+Which backend you get depends on what the Codespace actually offers, and that
+varies. Some Codespace machine types **do** expose `/dev/kvm` — where they do,
+Firecracker is chosen and you get a real hardware-accelerated microVM. Where
+they do not, the container backend is used instead: native CPU speed and
+millisecond startup, at the cost of a shared kernel, which is a weaker boundary
+than a VM. The server prints which one it picked on startup, and the UI shows it.
+
+The one thing never chosen is emulated QEMU — falling back to
+instruction-by-instruction emulation would be the opposite of fast.
 
 ## The terminal
 

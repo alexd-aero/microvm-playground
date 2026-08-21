@@ -51,11 +51,20 @@ async def main() -> int:
         await asyncio.sleep(3)
         return 1
 
+    # On a serial console a resize is written to the guest as a visible `stty`
+    # line, so sending an unchanged size is not merely wasteful -- it prints
+    # another line of noise. ttyd can emit several SIGWINCHs for one change
+    # (entering fullscreen does), which is why duplicates showed up at all.
+    last_size: list = [None]
+
     async def send_size():
-        rows, cols = winsize()
-        with_ = json.dumps({"type": "resize", "rows": rows, "cols": cols})
+        size = winsize()
+        if size == last_size[0]:
+            return
+        last_size[0] = size
+        rows, cols = size
         try:
-            await ws.send(with_)
+            await ws.send(json.dumps({"type": "resize", "rows": rows, "cols": cols}))
         except Exception:
             pass
 
@@ -70,6 +79,10 @@ async def main() -> int:
     async def watch_resize():
         while with_signal:
             await resized.wait()
+            resized.clear()
+            # A drag or a fullscreen transition produces a burst; let it settle
+            # so the guest is told once, not once per intermediate size.
+            await asyncio.sleep(0.25)
             resized.clear()
             await send_size()
 

@@ -171,9 +171,13 @@ async def console(ws: WebSocket, vm_id: str):
     hub = rec.vm.console
     queue = hub.subscribe()
 
-    back = hub.scrollback()
-    if back:
-        await ws.send_bytes(back)
+    # Replaying history is right for a terminal that owns the session, and
+    # wrong for one that gets a fresh screen per connection: ttyd would paint
+    # the old boot log over a live prompt. It asks for replay=0.
+    if ws.query_params.get("replay", "1") not in ("0", "false", "no"):
+        back = hub.scrollback()
+        if back:
+            await ws.send_bytes(back)
 
     async def pump():
         """Console -> browser."""

@@ -82,6 +82,11 @@ def _rule_args(slot: int, egress: str, mtu: int = 1500) -> list[list[str]]:
         ["-t", "filter", "FORWARD", "-i", tap, "-o", egress, "-j", "ACCEPT", *tag],
         ["-t", "filter", "FORWARD", "-o", tap, "-i", egress,
          "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT", *tag],
+        # Echo replies explicitly, in case this kernel's conntrack is not
+        # tracking ICMP and therefore never marks them ESTABLISHED. Harmless
+        # where conntrack does work; the rule above already matched them.
+        ["-t", "filter", "FORWARD", "-o", tap, "-i", egress,
+         "-p", "icmp", "-j", "ACCEPT", *tag],
         # Rewrite the MSS the guest advertises so it never builds a segment the
         # path cannot carry. --set-mss rather than --clamp-mss-to-pmtu because
         # nested container networks frequently cannot discover a PMTU at all,

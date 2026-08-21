@@ -206,6 +206,25 @@ the real minimum and the UI clamps the slider to it. Going *larger* than the
 golden image works, but the guest filesystem will not fill the extra space
 until you run `growpart /dev/vda 1 && resize2fs /dev/vda1` inside it.
 
+## When the guest's network misbehaves
+
+```bash
+bash tools/netcheck.sh
+```
+
+Run it on the host, not inside a playground. It separates three problems that
+all look identical from the guest:
+
+- **ICMP is blocked by the platform.** `ping` fails, everything TCP is fine.
+  Common on Azure, and therefore in Codespaces. Not fixable from here — and
+  note that QEMU's SLIRP *emulates* ICMP by answering from a host socket, so
+  ping appears to work under the QEMU backend even on networks that drop it.
+  Firecracker forwards real packets, so it does not get that flattery.
+- **MTU mismatch.** Small requests succeed, larger transfers hang. The host's
+  egress is often below 1500 inside a container or overlay network. The tap
+  now inherits the egress MTU and TCP MSS is rewritten on forwarded SYNs.
+- **The rules are wrong or missing.** `netcheck` prints them.
+
 ## Security
 
 - **There is no authentication.** Anyone who can reach the port can create VMs

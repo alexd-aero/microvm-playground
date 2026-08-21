@@ -37,7 +37,7 @@ jobs:
               print("ok", m)
           PY
       - name: Shell script syntax
-        run: bash -n run.sh setup.sh .devcontainer/post-create.sh tools/get-ttyd.sh
+        run: bash -n run.sh setup.sh .devcontainer/post-create.sh tools/get-ttyd.sh tools/netcheck.sh
       - name: devcontainer.json is valid JSONC
         run: |
           python - <<'PY'

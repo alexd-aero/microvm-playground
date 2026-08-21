@@ -1,20 +1,32 @@
 #!/usr/bin/env bash
 # Start the playground server.
 #
-#   ./run.sh                       auto: firecracker if /dev/kvm, else qemu
-#   sudo ./run.sh                  needed only for the firecracker backend
-#   MVMP_BACKEND=qemu ./run.sh     unprivileged QEMU guests
-#   ./run.sh --mock                simulated VMs, UI work only
+#   ./run.sh                          auto-select the best ready backend
+#   sudo ./run.sh                     needed only for the firecracker backend
+#   MVMP_BACKEND=container ./run.sh   native speed, millisecond launches
+#   MVMP_BACKEND=qemu ./run.sh        unprivileged VM, slow without KVM
+#   ./run.sh --mock                   simulated VMs, UI work only
+#
+# The server prints the backend it chose and what to expect from it on startup.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$HERE/.venv/bin/python"
 [ -x "$PY" ] || PY=$(command -v python3 || command -v python)
 
+# Mirror the server's own resolution closely enough to know whether root is
+# needed. The server is the authority -- this only decides whether to stop early
+# with a useful message, so it must not forget the container backend exists.
 backend="${MVMP_BACKEND:-auto}"
 case " $* " in *" --mock "*) backend=mock ;; esac
 if [ "$backend" = "auto" ]; then
-  if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then backend=firecracker; else backend=qemu; fi
+  if [ -r /dev/kvm ] && [ -w /dev/kvm ] && command -v firecracker >/dev/null 2>&1; then
+    backend=firecracker
+  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    backend=container
+  else
+    backend=qemu
+  fi
 fi
 
 # Only firecracker needs privileges: it creates tap devices and NAT rules.

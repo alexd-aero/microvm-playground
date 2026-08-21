@@ -33,10 +33,61 @@ async def lifespan(app: FastAPI):
                 "cannot create the state directory %s (%s). Set MVMP_STATE_DIR "
                 "to a writable path." % (C.VMS_DIR, exc)) from exc
     await manager.start_reaper()
+    _print_banner()
     try:
         yield
     finally:
         await manager.shutdown()
+
+
+def _print_banner() -> None:
+    """Say what was chosen and what to expect from it.
+
+    "Why is this slow?" should be answerable without opening the UI: the
+    difference between a 150 ms launch and a 30 s one is entirely which backend
+    and accelerator ended up in play, so print both, plus the way out.
+    """
+    h = manager.host_info()
+    accel = h.accel or ""
+
+    if h.mode == "container":
+        expect, faster = "launches in ~150 ms (native, no emulation)", None
+    elif h.mode == "firecracker":
+        expect, faster = "~125 ms of VMM, then a second or two of guest init", None
+    elif h.mode == "qemu" and accel and accel != "tcg":
+        expect, faster = "guest boots in a few seconds (%s acceleration)" % accel, None
+    elif h.mode == "qemu":
+        expect = "guest boots in ~20-40 s -- TCG emulates every instruction"
+        faster = [
+            "for instant launches, build the container image:",
+            "    docker build -t mvmp-playground:latest docker/",
+            "for a hardware-accelerated VM, get /dev/kvm on this host",
+        ]
+    else:
+        expect, faster = "simulated -- there is no machine behind this", None
+
+    # ASCII only: a Windows console is cp1252 and box-drawing characters raise
+    # UnicodeEncodeError. And nothing here is worth failing a startup over, so
+    # the whole thing is best-effort.
+    rule = "-" * 66
+    rows = [
+        ("backend", "%s%s" % (h.mode, (" (%s)" % accel) if accel else "")),
+        ("terminal", h.ttyd if h.terminal == "ttyd" and h.ttyd else
+                     ("ttyd" if h.terminal == "ttyd" else "built-in xterm.js")),
+        ("expect", expect),
+    ]
+    rows += [("problem", p) for p in h.problems]
+    try:
+        print("\n" + rule)
+        for label, value in rows:
+            print(" %-9s %s" % (label, value))
+        if faster:
+            print("")
+            for i, f in enumerate(faster):
+                print(" %-9s %s" % ("faster" if i == 0 else "", f))
+        print(rule + "\n", flush=True)
+    except Exception:
+        pass
 
 
 app = FastAPI(title="microvm playground", lifespan=lifespan)

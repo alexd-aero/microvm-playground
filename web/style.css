@@ -386,3 +386,15 @@ button{ font:inherit; color:inherit; }
 .icon-btn.tiny svg{ width:13px; height:13px; }
 .card-name .icon-btn{ opacity:0; transition:opacity .12s; }
 .card:hover .card-name .icon-btn{ opacity:1; }
+
+/* ── fullscreen console ─────────────────────────────────────────── */
+/* Native fullscreen: the console element itself becomes the whole screen. */
+.console:fullscreen{
+  width:100%; height:100%; max-width:none; border-radius:0; border:0;
+}
+/* Fallback for when the Fullscreen API is refused (permissions policy in an
+   embedded view). Fills the viewport instead, which needs no permission. */
+.console.is-max{
+  position:fixed; inset:0; z-index:150;
+  width:100%; height:100%; max-width:none; border-radius:0; border:0;
+}

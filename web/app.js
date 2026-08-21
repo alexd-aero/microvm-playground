@@ -499,6 +499,7 @@ function connectWS(id) {
 }
 
 function closeConsole() {
+  leaveFullscreen();
   $('#overlay').hidden = true;
   $('#pickOverlay').hidden = true;
   // Dropping the src tears down ttyd's client, which ends its bridge process
@@ -508,6 +509,61 @@ function closeConsole() {
   frame.removeAttribute('src');
   if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
   state.open = null;
+}
+
+/* ── fullscreen ─────────────────────────────────────────────────── */
+const FS_ENTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+const FS_EXIT  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h3a2 2 0 0 0 2-2V3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M21 16h-3a2 2 0 0 0-2 2v3"/></svg>';
+
+function consoleBox() { return document.querySelector('.console'); }
+
+function isFullscreen() {
+  const box = consoleBox();
+  return document.fullscreenElement === box || (box && box.classList.contains('is-max'));
+}
+
+function paintFsButton() {
+  const b = $('#btnFullscreen');
+  if (!b) return;
+  const on = isFullscreen();
+  b.innerHTML = on ? FS_EXIT : FS_ENTER;
+  b.title = on ? 'Exit fullscreen' : 'Fullscreen';
+}
+
+/* The terminal has to be told the new size. The built-in one refits and its
+   onResize handler pushes the size to the guest; the ttyd iframe handles its
+   own resize, so it needs nothing from us. */
+function afterConsoleResize() {
+  if (usingTtyd()) return;
+  safeFit();
+}
+
+async function toggleFullscreen() {
+  const box = consoleBox();
+  if (!box) return;
+  try {
+    if (document.fullscreenElement === box) {
+      await document.exitFullscreen();
+    } else if (!box.classList.contains('is-max')) {
+      await box.requestFullscreen();
+    } else {
+      box.classList.remove('is-max');
+    }
+  } catch (e) {
+    // Refused (permissions policy, or no user gesture). Fill the viewport
+    // instead -- visually the same, and it cannot be denied.
+    box.classList.toggle('is-max');
+  }
+  paintFsButton();
+  setTimeout(afterConsoleResize, 120);   // let the layout settle first
+}
+
+async function leaveFullscreen() {
+  const box = consoleBox();
+  if (box) box.classList.remove('is-max');
+  if (document.fullscreenElement) {
+    try { await document.exitFullscreen(); } catch (e) { /* already gone */ }
+  }
 }
 
 function usingTtyd() {
@@ -588,6 +644,13 @@ function init() {
     toast('Will ask which terminal next time');
   });
 
+  $('#btnFullscreen').addEventListener('click', toggleFullscreen);
+  document.addEventListener('fullscreenchange', () => {
+    paintFsButton();
+    setTimeout(afterConsoleResize, 120);
+  });
+  paintFsButton();
+
   $('#btnCloseConsole').addEventListener('click', closeConsole);
   $('#btnClear').addEventListener('click', () => {
     if (usingTtyd()) return;             // ttyd handles Ctrl+L natively
@@ -604,6 +667,9 @@ function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('#pickOverlay').hidden) { $('#pickOverlay').hidden = true; state.open = null; return; }
+    // In fullscreen, Escape is the browser's way out. Closing the console too
+    // would make one keypress do two things.
+    if (isFullscreen()) { leaveFullscreen(); paintFsButton(); return; }
     if (!$('#overlay').hidden) closeConsole();
   });
 

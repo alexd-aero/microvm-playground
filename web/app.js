@@ -29,7 +29,15 @@ function toast(msg, kind = '') {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+  let r;
+  try {
+    r = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+  } catch (e) {
+    // fetch() rejects with a bare "Failed to fetch" for anything network-level.
+    // Say what that actually means, and where to look.
+    throw new Error('no response from the server — it may have stopped, or the '
+      + 'request outlived a proxy timeout. Check the terminal running ./run.sh');
+  }
   const body = r.status === 204 ? null : await r.json().catch(() => null);
   if (!r.ok) throw new Error((body && (body.detail || body.error)) || `HTTP ${r.status}`);
   return body;

@@ -96,7 +96,8 @@ app = FastAPI(title="microvm playground", lifespan=lifespan)
 
 @app.get("/api/host")
 async def host():
-    return manager.host_info()
+    # host_info() probes Docker or QEMU by running them; keep that off the loop.
+    return await asyncio.to_thread(manager.host_info)
 
 
 @app.get("/api/vms")
@@ -118,7 +119,8 @@ async def create_vm(spec: CreateVM):
 @app.get("/api/images")
 async def images():
     """Operating systems this host can launch, with whether they are ready."""
-    return catalog.list_images(manager.backend)
+    # Off the loop: readiness means subprocess calls to Docker.
+    return await asyncio.to_thread(catalog.list_images, manager.backend)
 
 
 @app.patch("/api/vms/{vm_id}")

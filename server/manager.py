@@ -270,10 +270,7 @@ class Manager:
         return FirecrackerVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name, img)
 
     def _image_label(self, image_id: str) -> Optional[str]:
-        for item in catalog.list_images(self.backend):
-            if item["id"] == image_id:
-                return item["label"]
-        return None
+        return catalog.label_for(self.backend, image_id)
 
     async def create(self, spec: CreateVM) -> Record:
         async with self._lock:

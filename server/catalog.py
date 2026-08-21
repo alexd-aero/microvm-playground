@@ -14,6 +14,7 @@ first", so the UI can say so instead of appearing to hang.
 """
 import contextlib
 import subprocess
+import time
 from typing import Optional
 
 from . import config as C
@@ -33,14 +34,32 @@ CONTAINER_IMAGES: dict[str, tuple[str, str, str]] = {
 DEFAULT_ID = "default"
 
 
+# `docker image inspect` is a subprocess round-trip each. Seven of them, called
+# from a request handler, is enough to stall the event loop long enough for a
+# proxy to drop the connection -- which surfaces in the browser as the
+# uninformative "Failed to fetch". Cache the answer briefly.
+_READY_TTL = 15.0
+_ready_cache: dict[str, tuple[float, bool]] = {}
+
+
 def _docker_has(ref: str) -> bool:
+    hit = _ready_cache.get(ref)
+    now = time.monotonic()
+    if hit and now - hit[0] < _READY_TTL:
+        return hit[1]
+    value = _docker_has_uncached(ref)
+    _ready_cache[ref] = (now, value)
+    return value
+
+
+def _docker_has_uncached(ref: str) -> bool:
     from .container import docker_bin
     exe = docker_bin()
     if not exe:
         return False
     with contextlib.suppress(Exception):
         p = subprocess.run([exe, "image", "inspect", ref],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=8)
         return p.returncode == 0
     return False
 
@@ -107,3 +126,20 @@ def resolve(backend: str, image_id: Optional[str]) -> Optional[str]:
         if item["id"] == image_id:
             return item["ref"]
     return None
+
+
+def label_for(backend: str, image_id: str) -> Optional[str]:
+    """The human label for an id, without touching Docker or the disk.
+
+    Deliberately separate from list_images(): naming a choice must not cost a
+    readiness probe, because this runs inside the create path.
+    """
+    if not image_id:
+        image_id = DEFAULT_ID
+    if backend == "container":
+        entry = CONTAINER_IMAGES.get(image_id)
+        return entry[0] if entry else None
+    if image_id == DEFAULT_ID:
+        return {"qemu": C.BASE_IMAGE.stem,
+                "firecracker": C.BASE_ROOTFS.stem}.get(backend, "default")
+    return image_id

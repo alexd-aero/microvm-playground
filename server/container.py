@@ -186,9 +186,12 @@ class ContainerVM:
             raise ContainerError(
                 "The container backend needs a POSIX pty (Linux/macOS). "
                 "On Windows use the QEMU backend.")
-        if not has_docker():
+        # Both of these shell out to docker. Run them off the event loop, or a
+        # slow daemon stalls every other request -- including this one, whose
+        # connection the proxy then drops.
+        if not await asyncio.to_thread(has_docker):
             raise ContainerError("Docker is not available or its daemon is not running.")
-        if self.image == C.CONTAINER_IMAGE and not image_present():
+        if self.image == C.CONTAINER_IMAGE and not await asyncio.to_thread(image_present):
             raise ContainerError(
                 "Image %s not built. Run: docker build -t %s docker/"
                 % (C.CONTAINER_IMAGE, C.CONTAINER_IMAGE))

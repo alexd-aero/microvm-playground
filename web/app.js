@@ -289,19 +289,49 @@ function attachRenderer(term) {
   }
 }
 
+const TERM_PREF = 'mvmp.terminal';   // 'ask' | 'builtin' | 'ttyd'
+
+function termPref() {
+  try { return localStorage.getItem(TERM_PREF) || 'ask'; } catch (e) { return 'ask'; }
+}
+function setTermPref(v) {
+  try { v === 'ask' ? localStorage.removeItem(TERM_PREF) : localStorage.setItem(TERM_PREF, v); }
+  catch (e) { /* private mode: the choice just will not persist */ }
+}
+
 function openConsole(id) {
   const vm = state.vms.find((v) => v.id === id);
-  $('#overlay').hidden = false;
-  $('#consoleName').textContent = vm ? vm.name : id;
-  $('#consoleSpecs').innerHTML = vm
-    ? `<span class="spec"><b>${vm.vcpus}</b> vCPU</span><span class="spec"><b>${fmtMem(vm.mem_mib)}</b></span><span class="spec">${vm.ip || ''}</span>`
-    : '';
+  if (!vm) return;
   state.open = id;
 
-  // ttyd serves the terminal wherever it is installed; the built-in xterm.js
-  // console is the fallback, and stays the transport ttyd's bridge rides on.
-  if (vm && vm.terminal_url) return openTtyd(vm);
-  openBuiltin(id);
+  // Only worth asking when there is a real choice. Without ttyd -- Windows,
+  // or MVMP_TTYD_ENABLE=off -- there is exactly one terminal, and a dialog
+  // offering one option is just an extra click.
+  if (!vm.terminal_url) return showConsole(vm, 'builtin');
+
+  const pref = termPref();
+  if (pref === 'builtin' || pref === 'ttyd') return showConsole(vm, pref);
+
+  $('#pickRemember').checked = false;
+  $('#pickOverlay').hidden = false;
+  state.pickFor = id;
+}
+
+function showConsole(vm, kind) {
+  $('#pickOverlay').hidden = true;
+  $('#overlay').hidden = false;
+  $('#consoleName').textContent = vm.name;
+  $('#consoleSpecs').innerHTML =
+    `<span class="spec"><b>${vm.vcpus}</b> vCPU</span><span class="spec"><b>${fmtMem(vm.mem_mib)}</b></span><span class="spec">${vm.ip || ''}</span>`;
+
+  const hasChoice = !!vm.terminal_url;
+  $('#termSwitch').hidden = !hasChoice;
+  $('#btnAskAgain').hidden = !hasChoice || termPref() === 'ask';
+  $$('#termSwitch .seg-btn').forEach((b) =>
+    b.classList.toggle('is-on', b.dataset.term === kind));
+
+  state.kind = kind;
+  if (kind === 'ttyd') openTtyd(vm); else openBuiltin(vm.id);
 }
 
 function openTtyd(vm) {
@@ -394,6 +424,7 @@ function connectWS(id) {
 
 function closeConsole() {
   $('#overlay').hidden = true;
+  $('#pickOverlay').hidden = true;
   // Dropping the src tears down ttyd's client, which ends its bridge process
   // -- otherwise a closed dialog would keep a shell (and its CPU) alive.
   const frame = $('#ttydFrame');
@@ -443,6 +474,30 @@ function init() {
     refresh();
   });
 
+  $$('#pickOverlay .pick').forEach((b) => b.addEventListener('click', () => {
+    const kind = b.dataset.term;
+    if ($('#pickRemember').checked) setTermPref(kind);
+    const vm = state.vms.find((v) => v.id === state.pickFor);
+    if (vm) showConsole(vm, kind);
+  }));
+  $('#pickOverlay').addEventListener('mousedown', (e) => {
+    if (e.target === $('#pickOverlay')) { $('#pickOverlay').hidden = true; state.open = null; }
+  });
+
+  // Switching live beats re-asking: same playground, other terminal.
+  $$('#termSwitch .seg-btn').forEach((b) => b.addEventListener('click', () => {
+    const vm = state.vms.find((v) => v.id === state.open);
+    if (!vm || state.kind === b.dataset.term) return;
+    if (termPref() !== 'ask') setTermPref(b.dataset.term);   // keep a saved choice honest
+    showConsole(vm, b.dataset.term);
+  }));
+
+  $('#btnAskAgain').addEventListener('click', () => {
+    setTermPref('ask');
+    $('#btnAskAgain').hidden = true;
+    toast('Will ask which terminal next time');
+  });
+
   $('#btnCloseConsole').addEventListener('click', closeConsole);
   $('#btnClear').addEventListener('click', () => {
     if (usingTtyd()) return;             // ttyd handles Ctrl+L natively
@@ -456,7 +511,11 @@ function init() {
     connectWS(state.open);
   });
   $('#overlay').addEventListener('mousedown', (e) => { if (e.target === $('#overlay')) closeConsole(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#overlay').hidden) closeConsole(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('#pickOverlay').hidden) { $('#pickOverlay').hidden = true; state.open = null; return; }
+    if (!$('#overlay').hidden) closeConsole();
+  });
 
   updateForm();
   api('/api/host').then(renderHost).catch(() => toast('Cannot reach the server', 'err'));

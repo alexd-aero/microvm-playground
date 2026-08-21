@@ -42,10 +42,29 @@ playground's console websocket. One bridge covers every backend, and since ttyd
 starts a fresh command per browser connection, several viewers can attach at
 once without fighting over one serial line.
 
-`ttyd` is a native binary with no practical Windows build, so **Windows keeps
-the built-in xterm.js console**. Deleting it would have broken the QEMU path on
-the very machine this was developed on. The UI states which terminal is in use;
-`MVMP_TTYD_ENABLE=off` forces the built-in one everywhere.
+### Two terminals, your choice
+
+Both are good, and they are good at different things, so the console asks which
+one you want the first time — with *Remember my choice*, a live switch in the
+console header, and an *always ask* reset in the footer.
+
+| | Built-in (xterm.js) | ttyd |
+|---|---|---|
+| renderer | WebGL, Unicode 11 widths | ttyd's own xterm build |
+| on re-attach | replays scrollback, so you keep the boot log | fresh shell each connection |
+| resize | `stty` written to the guest (serial carries no SIGWINCH) | native SIGWINCH |
+| process | none — the server's own websocket | one ttyd per playground |
+
+The built-in terminal handles heavy redraw output well — progress spinners of
+the `speedtest-cli` variety, which hammer carriage returns and wide glyphs, come
+out clean rather than as scattered dots. That is down to the WebGL renderer, the
+Unicode 11 addon fixing wide-cell widths, and the console hub stripping terminal
+*queries* out of replayed scrollback.
+
+When only one terminal exists there is no dialog — a prompt offering a single
+option is just an extra click. That is the normal case on **Windows**, where
+`ttyd` has no practical build, so the built-in console is used and the footer
+says so. `MVMP_TTYD_ENABLE=off` forces the built-in one everywhere.
 
 ## Backends
 

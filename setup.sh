@@ -75,6 +75,24 @@ ok "host packages"
 
 mkdir -p "$IMAGES" "$STATE_DIR/vms"
 
+# ── ttyd (the second terminal) ───────────────────────────────────────────────
+# Deliberately early: it takes seconds, while the rootfs build below takes
+# minutes. Installing it last meant that abandoning a slow build also skipped
+# ttyd, and the terminal chooser then silently offered only one option.
+# No sudo needed -- this script already requires root, and get-ttyd.sh skips
+# sudo when it is already uid 0.
+step "Installing ttyd"
+TTYD_LOG=$(mktemp)
+if bash "$HERE/tools/get-ttyd.sh" >"$TTYD_LOG" 2>&1 && command -v ttyd >/dev/null 2>&1; then
+  ok "$(ttyd --version 2>&1 | head -1)"
+else
+  warn "could not install ttyd -- the built-in terminal will be the only option."
+  warn "Reason:"
+  sed 's/^/        /' "$TTYD_LOG" | tail -6
+  warn "Retry on its own with:  sudo bash tools/get-ttyd.sh"
+fi
+rm -f "$TTYD_LOG"
+
 # ── firecracker ──────────────────────────────────────────────────────────────
 step "Installing Firecracker"
 FC_VER=${FC_VERSION:-}
@@ -326,15 +344,6 @@ else
   cleanup_mnt
   USED=$(du -h --apparent-size "$IMAGES/rootfs.ext4" 2>/dev/null | cut -f1)
   ok "rootfs built at $IMAGES/rootfs.ext4 (${USED:-?})"
-fi
-
-# ── ttyd (the second terminal) ───────────────────────────────────────────────
-step "Installing ttyd"
-if bash "$HERE/tools/get-ttyd.sh" >/dev/null 2>&1 && command -v ttyd >/dev/null 2>&1; then
-  ok "$(ttyd --version 2>&1 | head -1)"
-else
-  warn "could not install ttyd -- the built-in terminal will be the only option"
-  warn "(retry later with: sudo bash tools/get-ttyd.sh)"
 fi
 
 # ── python env ───────────────────────────────────────────────────────────────

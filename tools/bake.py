@@ -38,6 +38,22 @@ DEFAULT_PACKAGES = ("git curl wget neofetch htop vim nano tmux jq unzip zip "
                     "ca-certificates python3 less tree file "
                     "iputils-ping dnsutils net-tools")
 
+# Arch publishes a cloud image with cloud-init, so the same bake works -- only
+# the package names differ. neofetch was dropped from the Arch repositories
+# after upstream archived it; fastfetch is the maintained replacement.
+ARCH_URL = ("https://geo.mirror.pkgbuild.com/images/latest/"
+            "Arch-Linux-x86_64-cloudimg.qcow2")
+ARCH_PACKAGES = ("git curl wget fastfetch htop vim nano tmux jq unzip zip "
+                 "ca-certificates python less tree file "
+                 "iputils bind inetutils net-tools base-devel")
+
+DISTROS = {
+    "debian": {"url": DEBIAN_URL, "packages": DEFAULT_PACKAGES,
+               "base": "debian-base.qcow2", "out": None},
+    "arch":   {"url": ARCH_URL, "packages": ARCH_PACKAGES,
+               "base": "arch-base.qcow2", "out": "arch.qcow2"},
+}
+
 # cloud-init's NoCloud datasource reads these two files off a volume labelled
 # CIDATA. %I below is a systemd specifier, not a Python placeholder.
 USER_DATA = """#cloud-config
@@ -181,11 +197,21 @@ def main() -> int:
     ap.add_argument("--disk-gb", type=int, default=8)
     ap.add_argument("--mem-mib", type=int, default=2048)
     ap.add_argument("--vcpus", type=int, default=max(2, min(4, os.cpu_count() or 2)))
-    ap.add_argument("--packages", default=DEFAULT_PACKAGES)
-    ap.add_argument("--url", default=DEBIAN_URL)
+    ap.add_argument("--distro", choices=sorted(DISTROS), default="debian",
+                    help="debian is the default image; arch is offered alongside it")
+    ap.add_argument("--packages", default=None)
+    ap.add_argument("--url", default=None)
+    ap.add_argument("--out", default=None,
+                    help="output filename inside the images directory")
     ap.add_argument("--timeout", type=int, default=5400)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
+
+    spec = DISTROS[args.distro]
+    if args.packages is None:
+        args.packages = spec["packages"]
+    if args.url is None:
+        args.url = spec["url"]
 
     qemu = find_binary(C.QEMU_SYSTEM)
     qemu_img = find_binary("qemu-img")
@@ -194,13 +220,18 @@ def main() -> int:
         return 1
 
     C.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    base = C.IMAGES_DIR / "debian-base.qcow2"
-    golden = C.BASE_IMAGE
-    seed = C.IMAGES_DIR / "seed.iso"
-    serial_log = C.IMAGES_DIR / "bake-serial.log"
+    base = C.IMAGES_DIR / spec["base"]
+    # Non-default distros are written beside the golden image under their own
+    # name. The catalogue lists every qcow2 it finds, so a baked arch.qcow2
+    # simply appears in the OS dropdown with no further wiring.
+    out_name = args.out or spec["out"]
+    golden = (C.IMAGES_DIR / out_name) if out_name else C.BASE_IMAGE
+    seed = C.IMAGES_DIR / ("seed-%s.iso" % args.distro)
+    serial_log = C.IMAGES_DIR / ("bake-%s-serial.log" % args.distro)
 
     if golden.exists() and not args.force:
-        log("golden image already built at %s (use --force to rebuild)" % golden, "32")
+        log("%s image already built at %s (use --force to rebuild)"
+            % (args.distro, golden), "32")
         return 0
 
     fetch_base(base, args.url)

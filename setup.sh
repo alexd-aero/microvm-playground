@@ -30,8 +30,19 @@ ALPINE_PKGS=${ALPINE_PKGS:-"bash coreutils util-linux ncurses ncurses-terminfo c
 ca-certificates openssh-client git nano vim htop tmux jq bind-tools iproute2 tzdata \
 python3 py3-pip file less findutils grep sed tar gzip neofetch sudo build-base"}
 
-# Debian with a full userland needs real room; Alpine does not.
-if [ "$DISTRO" = "debian" ]; then ROOTFS_MB=${ROOTFS_MB:-3072}; else ROOTFS_MB=${ROOTFS_MB:-1024}; fi
+ARCH_PKGS=${ARCH_PKGS:-"base systemd bash coreutils util-linux procps-ng git curl wget openssh rsync vim nano less tree file jq unzip zip tar gzip htop tmux fastfetch sudo which python iputils inetutils bind net-tools iproute2 base-devel"}
+
+# Debian and Arch carry a full userland; Alpine does not.
+case "$DISTRO" in
+  debian) ROOTFS_MB=${ROOTFS_MB:-3072} ;;
+  arch)   ROOTFS_MB=${ROOTFS_MB:-4096} ;;
+  *)      ROOTFS_MB=${ROOTFS_MB:-1024} ;;
+esac
+
+# Debian and Alpine build *the* default rootfs. Arch is an additional option, so
+# it is written under its own name -- the catalogue lists every ext4 it finds,
+# which is what makes it appear in the OS dropdown with no further wiring.
+if [ "$DISTRO" = "arch" ]; then ROOTFS_OUT=rootfs-arch.ext4; else ROOTFS_OUT=rootfs.ext4; fi
 
 c()    { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 step() { c '1;36' "==> $1"; }
@@ -44,7 +55,7 @@ step "Checking the host"
 [ "$(uname -s)" = "Linux" ] || die "This must run on Linux. On Windows use WSL2 (see README)."
 [ "$(id -u)" = "0" ] || die "Run as root: sudo ./setup.sh"
 [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "aarch64" ] || die "Unsupported arch: $ARCH"
-case "$DISTRO" in debian|alpine) ;; *) die "DISTRO must be debian or alpine" ;; esac
+case "$DISTRO" in debian|alpine|arch) ;; *) die "DISTRO must be debian, alpine or arch" ;; esac
 
 if [ -e /dev/kvm ] && [ -w /dev/kvm ]; then
   ok "/dev/kvm present and writable"
@@ -326,24 +337,75 @@ NETUP
   echo "playground" > "$MNT/etc/hostname"
 }
 
+# ── arch guest ───────────────────────────────────────────────────────────────
+build_arch() {
+  command -v unzstd >/dev/null 2>&1 || command -v zstd >/dev/null 2>&1     || die "DISTRO=arch needs zstd (apt-get install zstd)"
+
+  TARBALL="archlinux-bootstrap-x86_64.tar.zst"
+  MIRROR="https://geo.mirror.pkgbuild.com/iso/latest/${TARBALL}"
+  echo "    downloading the Arch bootstrap tarball"
+  curl -fsSL "$MIRROR" -o "$TMP/$TARBALL" || die "could not download $MIRROR"
+  tar --use-compress-program=unzstd -xf "$TMP/$TARBALL" -C "$MNT" --strip-components=1     || die "could not unpack the bootstrap tarball"
+
+  printf '%s
+' 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch'     > "$MNT/etc/pacman.d/mirrorlist"
+  cp /etc/resolv.conf "$MNT/etc/resolv.conf"
+  mount_pseudo
+
+  # Keyring init wants entropy and can stall on a headless host; bound it rather
+  # than letting setup hang with no explanation.
+  echo "    initialising the pacman keyring (this can take a minute)"
+  timeout 420 chroot "$MNT" /usr/bin/pacman-key --init     || die "pacman-key --init failed or timed out"
+  timeout 420 chroot "$MNT" /usr/bin/pacman-key --populate archlinux     || die "pacman-key --populate failed or timed out"
+
+  echo "    installing: $ARCH_PKGS"
+  chroot "$MNT" /usr/bin/pacman -Sy --noconfirm >/dev/null || die "pacman -Sy failed"
+  chroot "$MNT" /usr/bin/pacman -S --noconfirm --needed $ARCH_PKGS >/dev/null     || die "pacman could not install the package set"
+  chroot "$MNT" /usr/bin/passwd -d root >/dev/null 2>&1 || true
+
+  echo "/dev/vda / ext4 defaults,noatime 0 1" > "$MNT/etc/fstab"
+  printf '%s
+' 'LANG=C.UTF-8' > "$MNT/etc/locale.conf"
+
+  mkdir -p "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d"
+  cat > "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" <<'GETTY'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I xterm-256color
+Type=idle
+GETTY
+
+  chroot "$MNT" /usr/bin/systemctl mask systemd-networkd-wait-online.service >/dev/null 2>&1 || true
+
+  write_profile
+  write_motd "Arch Linux · pacman"
+  echo "playground" > "$MNT/etc/hostname"
+
+  rm -rf "$MNT/var/cache/pacman/pkg/"* 2>/dev/null || true
+}
+
 # ── build the golden rootfs ──────────────────────────────────────────────────
 step "Building the $DISTRO rootfs (${ROOTFS_MB} MB)"
-if [ -s "$IMAGES/rootfs.ext4" ] && [ -z "${FORCE_ROOTFS:-}" ]; then
+if [ -s "$IMAGES/$ROOTFS_OUT" ] && [ -z "${FORCE_ROOTFS:-}" ]; then
   ok "rootfs already present (FORCE_ROOTFS=1 to rebuild)"
 else
-  rm -f "$IMAGES/rootfs.ext4"
-  truncate -s "${ROOTFS_MB}M" "$IMAGES/rootfs.ext4"
-  mkfs.ext4 -q -F -L mvmp-root "$IMAGES/rootfs.ext4"
+  rm -f "$IMAGES/$ROOTFS_OUT"
+  truncate -s "${ROOTFS_MB}M" "$IMAGES/$ROOTFS_OUT"
+  mkfs.ext4 -q -F -L mvmp-root "$IMAGES/$ROOTFS_OUT"
 
   MNT=$(mktemp -d)
-  mount -o loop "$IMAGES/rootfs.ext4" "$MNT"
+  mount -o loop "$IMAGES/$ROOTFS_OUT" "$MNT"
 
-  if [ "$DISTRO" = "debian" ]; then build_debian; else build_alpine; fi
+  case "$DISTRO" in
+    debian) build_debian ;;
+    arch)   build_arch ;;
+    *)      build_alpine ;;
+  esac
 
   sync
   cleanup_mnt
-  USED=$(du -h --apparent-size "$IMAGES/rootfs.ext4" 2>/dev/null | cut -f1)
-  ok "rootfs built at $IMAGES/rootfs.ext4 (${USED:-?})"
+  USED=$(du -h --apparent-size "$IMAGES/$ROOTFS_OUT" 2>/dev/null | cut -f1)
+  ok "rootfs built at $IMAGES/$ROOTFS_OUT (${USED:-?})"
 fi
 
 # ── python env ───────────────────────────────────────────────────────────────

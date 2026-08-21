@@ -11,6 +11,7 @@ attach at once without fighting over a single serial line.
     python3 tools/attach.py ws://127.0.0.1:8080/api/vms/<id>/console
 """
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -104,7 +105,19 @@ async def main() -> int:
             os.write(1, msg)
 
     await send_size()
+
+    async def clean_screen():
+        """Start on a clean screen rather than mid-conversation.
+
+        Twice: the first clear removes the stty line the resize echoed, the
+        second removes the first clear's own echo.
+        """
+        await asyncio.sleep(0.5)
+        with contextlib.suppress(Exception):
+            await ws.send(b"clear\nclear\n")
+
     tasks = [asyncio.create_task(t()) for t in (to_playground, from_playground)]
+    tasks.append(asyncio.create_task(clean_screen()))
     if with_signal:
         tasks.append(asyncio.create_task(watch_resize()))
 

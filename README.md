@@ -84,6 +84,28 @@ For the VM backends the list is simply the disk images sitting in the images
 directory. Drop another `.qcow2` (QEMU) or `.ext4` (Firecracker) in there and it
 appears in the UI with no code change.
 
+### Arch Linux as a VM
+
+Arch is available on **both Windows and Linux**, because the QEMU backend runs
+on both:
+
+```bash
+python tools/bake.py --distro arch        # writes images/arch.qcow2
+```
+
+It is baked from the official Arch cloud image, lands beside the Debian golden
+image under its own name, and then shows up in the OS dropdown. `neofetch` is
+replaced by `fastfetch`, which is what Arch actually ships now.
+
+For the Firecracker backend on Linux:
+
+```bash
+sudo DISTRO=arch ./setup.sh               # writes images/rootfs-arch.ext4
+```
+
+That one bootstraps from the Arch tarball and needs `zstd` on the host. It is
+written under its own name too, so Debian stays the default.
+
 ## Stopping and starting
 
 A playground with auto-destroy set to **never** gets Stop and Start buttons, and

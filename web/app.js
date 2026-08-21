@@ -486,6 +486,16 @@ function connectWS(id) {
     state.sentRows = state.term.rows;
     state.sentCols = state.term.cols;
     ws.send(JSON.stringify({ type: 'resize', rows: state.term.rows, cols: state.term.cols }));
+
+    // Land on a clean screen. Twice on purpose: the first clear disposes of the
+    // boot log and the stty line the resize just echoed, the second removes the
+    // first clear's own echoed command. Delayed so the shell has finished with
+    // the resize before these arrive.
+    setTimeout(() => {
+      if (ws.readyState === 1 && state.ws === ws) {
+        ws.send(new TextEncoder().encode('clear\nclear\n'));
+      }
+    }, 500);
   };
   ws.onmessage = (ev) => {
     state.term.write(new Uint8Array(ev.data));   // raw bytes → xterm decodes UTF-8

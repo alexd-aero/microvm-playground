@@ -372,8 +372,8 @@ function openBuiltin(id) {
     state.term.onResize(({ rows, cols }) => {
       clearTimeout(rzTimer);
       rzTimer = setTimeout(() => {
-        // Only on a genuine change: the guest already sized itself at login,
-        // and each of these writes a visible `stty` line into the shell.
+        // Only on a genuine change: each of these writes a visible `stty` line
+        // into the shell, so repeating an unchanged size is pure noise.
         if (state.ws && state.ws.readyState === 1 &&
             (rows !== state.sentRows || cols !== state.sentCols)) {
           state.sentRows = rows;
@@ -409,10 +409,16 @@ function connectWS(id) {
     status.textContent = 'connected';
     dot.className = 'dot dot-live';
     safeFit();
-    // Record the size without pushing it: the guest sized itself at login, and
-    // an unsolicited stty here just prints a stray line on every attach.
+    // Push the real size immediately. The guest does try to size itself, but
+    // that runs at *login* -- which happens during boot, with no browser
+    // attached, so its cursor-position query goes unanswered and it stays at
+    // 80x24. Leaving it there makes the guest wrap lines the browser does not,
+    // which garbles anything that redraws with \r (curl progress, spinners).
+    // One stty line on attach is a far smaller cost than permanently wrong
+    // wrapping.
     state.sentRows = state.term.rows;
     state.sentCols = state.term.cols;
+    ws.send(JSON.stringify({ type: 'resize', rows: state.term.rows, cols: state.term.cols }));
   };
   ws.onmessage = (ev) => {
     state.term.write(new Uint8Array(ev.data));   // raw bytes → xterm decodes UTF-8

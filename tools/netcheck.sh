@@ -49,12 +49,20 @@ else
 fi
 
 hdr "playground firewall rules"
-RULES=$(iptables-save 2>/dev/null | grep -c 'mvmp:' || echo 0)
-if [ "$RULES" -gt 0 ]; then
+# grep -c prints 0 and exits 1 when it matches nothing, so an `|| echo 0`
+# fallback appended a second line and produced two zeroes, which then broke
+# the numeric test below.
+if [ "$(id -u)" != "0" ]; then
+  warn "not root: cannot read iptables. Re-run with sudo to inspect the rules."
+  RULES=-1
+else
+  RULES=$(iptables-save 2>/dev/null | grep -c 'mvmp:') || RULES=0
+fi
+if [ "$RULES" -gt 0 ] 2>/dev/null; then
   ok "$RULES rule(s) installed"
   iptables-save 2>/dev/null | grep 'mvmp:' | sed 's/^/      /'
-else
-  warn "no rules found -- start a playground first, or you are not root"
+elif [ "$RULES" = "0" ]; then
+  warn "no rules found -- is a playground running?"
 fi
 
 if [ -r /proc/net/nf_conntrack ] || lsmod 2>/dev/null | grep -q nf_conntrack; then

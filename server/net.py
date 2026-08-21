@@ -149,3 +149,24 @@ def ip_boot_arg(slot: int) -> str:
     """Kernel IP autoconfiguration -- no guest agent needed."""
     host_ip, guest_ip, _ = slot_addrs(slot)
     return f"ip={guest_ip}::{host_ip}:255.255.255.252::eth0:off"
+
+
+# --- ICMP reachability -------------------------------------------------------
+# Probed once, in the background, because the answer explains a confusing class
+# of "the network is broken" reports: many hosts (Azure, and therefore
+# Codespaces) drop outbound ICMP entirely. When they do, ping cannot work inside
+# a guest no matter what rules we write, while TCP is completely unaffected.
+_icmp_ok: Optional[bool] = None
+
+
+def probe_icmp(target: str = "1.1.1.1") -> bool:
+    """Can this host send ICMP at all? Caches the answer."""
+    global _icmp_ok
+    p = _run("ping", "-c", "1", "-W", "2", target, check=False)
+    _icmp_ok = p.returncode == 0
+    return _icmp_ok
+
+
+def icmp_state() -> Optional[bool]:
+    """True, False, or None when it has not been probed yet."""
+    return _icmp_ok

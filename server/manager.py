@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config as C
+from . import net
 from . import ttyd as _ttyd
 from .models import TTL_CHOICES, CreateVM, HostInfo, VMView
 
@@ -186,6 +187,11 @@ class Manager:
                                 % C.BASE_IMAGE)
 
         else:  # firecracker
+            if net.icmp_state() is False:
+                notes.append("This host cannot send ICMP -- ping will not work inside "
+                             "a playground, and no firewall rule can change that. "
+                             "TCP (apt, curl, git, ssh) is unaffected. Common on "
+                             "Azure and therefore in Codespaces.")
             if not kvm:
                 problems.append("/dev/kvm is missing or not writable -- Firecracker cannot start.")
             if not Path(C.FIRECRACKER_BIN).exists():
@@ -311,6 +317,10 @@ class Manager:
             from .container import cleanup_orphans, pool
             await cleanup_orphans()      # containers a previous run left behind
             pool().refill_soon()
+        if self.backend == "firecracker":
+            # Off the startup path: the probe costs a couple of seconds and
+            # nothing needs the answer until someone asks why ping fails.
+            asyncio.create_task(asyncio.to_thread(net.probe_icmp))
 
     async def _reap_loop(self) -> None:
         while True:

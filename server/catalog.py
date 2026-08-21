@@ -64,11 +64,22 @@ def _docker_has_uncached(ref: str) -> bool:
     return False
 
 
+# bake.py keeps the pristine cloud image it downloaded as "<distro>-base.qcow2"
+# so a rebuild does not re-fetch hundreds of megabytes. That file is a download
+# cache, not a playground: it has never been through the bake, so it has no
+# autologin, no profile and no MOTD. Booting one drops you at a login prompt
+# with sshd failing in a loop -- listing it as a choice was a bug.
+def _is_intermediate(path) -> bool:
+    return path.stem.endswith("-base")
+
+
 def _disk_images(pattern: str, default_name: str) -> list[dict]:
     out: list[dict] = []
     if not C.IMAGES_DIR.exists():
         return out
     for path in sorted(C.IMAGES_DIR.glob(pattern)):
+        if _is_intermediate(path):
+            continue
         stem = path.stem
         out.append({
             "id": "default" if path.name == default_name else stem,

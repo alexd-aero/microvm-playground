@@ -328,6 +328,15 @@ else
   ok "rootfs built at $IMAGES/rootfs.ext4 (${USED:-?})"
 fi
 
+# ── ttyd (the second terminal) ───────────────────────────────────────────────
+step "Installing ttyd"
+if bash "$HERE/tools/get-ttyd.sh" >/dev/null 2>&1 && command -v ttyd >/dev/null 2>&1; then
+  ok "$(ttyd --version 2>&1 | head -1)"
+else
+  warn "could not install ttyd -- the built-in terminal will be the only option"
+  warn "(retry later with: sudo bash tools/get-ttyd.sh)"
+fi
+
 # ── python env ───────────────────────────────────────────────────────────────
 step "Creating the Python environment"
 python3 -m venv "$HERE/.venv" 2>/dev/null || python3 -m venv --system-site-packages "$HERE/.venv"

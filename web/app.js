@@ -5,7 +5,7 @@ const MEM_STEPS = [128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 8
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-const state = { host: null, vms: [], ttl: '1h', open: null, term: null, ws: null, fit: null };
+const state = { host: null, vms: [], images: [], ttl: '1h', open: null, term: null, ws: null, fit: null };
 
 /* ── helpers ────────────────────────────────────────────────────── */
 const fmtMem  = (m) => (m >= 1024 ? (m / 1024 % 1 ? (m / 1024).toFixed(1) : m / 1024) + ' GiB' : m + ' MiB');
@@ -60,7 +60,24 @@ function currentSpec() {
     mem_mib: MEM_STEPS[+$('#mem').value],
     disk_gb: +$('#disk').value,
     ttl: state.ttl,
+    image: ($('#osSelect') || {}).value || 'default',
   };
+}
+
+async function loadImages() {
+  let items = [];
+  try { items = await api('/api/images'); } catch (e) { return; }
+  state.images = items;
+  const sel = $('#osSelect');
+  sel.innerHTML = items.map((i) =>
+    `<option value="${escape(i.id)}">${escape(i.label)}${i.ready ? '' : '  (downloads first)'}</option>`).join('');
+  showOsNote();
+}
+
+function showOsNote() {
+  const sel = $('#osSelect');
+  const item = (state.images || []).find((i) => i.id === sel.value);
+  $('#osNote').textContent = item ? item.note : '';
 }
 
 function updateForm() {
@@ -118,6 +135,9 @@ function cardHTML(vm) {
       <div class="card-name">
         <i class="dot ${live ? 'dot-live' : vm.state === 'error' ? 'dot-bad' : 'dot-warn'}"></i>
         <span>${escape(vm.name)}</span>
+        <button class="icon-btn tiny ripple" data-act="rename" title="Rename">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+        </button>
       </div>
       <span class="state ${vm.state}">${vm.state}</span>
     </div>
@@ -125,6 +145,7 @@ function cardHTML(vm) {
       <span class="spec"><b>${vm.vcpus}</b> vCPU</span>
       <span class="spec"><b>${fmtMem(vm.mem_mib)}</b></span>
       <span class="spec"><b>${vm.disk_gb}</b> GB</span>
+      ${vm.image_label ? `<span class="spec">${escape(vm.image_label.split(' · ')[0])}</span>` : ''}
     </div>
     ${vm.error ? `<div class="card-err">${escape(vm.error)}</div>` : `
     <div class="meta">
@@ -135,6 +156,9 @@ function cardHTML(vm) {
     </div>`}
     <div class="card-actions">
       <button class="btn btn-ghost btn-sm ripple" data-act="console" ${live ? '' : 'disabled'}>Console</button>
+      ${vm.can_suspend ? (vm.state === 'stopped'
+        ? `<button class="btn btn-ghost btn-sm ripple" data-act="start">Start</button>`
+        : `<button class="btn btn-ghost btn-sm ripple" data-act="stop" ${live ? '' : 'disabled'}>Stop</button>`) : ''}
       <button class="btn btn-danger btn-sm ripple" data-act="destroy">Destroy</button>
     </div>
   </article>`;
@@ -144,8 +168,8 @@ function cardHTML(vm) {
    selection, so only redraw when something actually changed. The live counters
    are updated in place by tickTimers(). */
 function signature(vms) {
-  return vms.map((v) => [v.id, v.state, v.ip, v.boot_ms, v.expires_at, v.error,
-                        v.terminal_url].join('~')).join('|');
+  return vms.map((v) => [v.id, v.name, v.state, v.ip, v.boot_ms, v.expires_at,
+                        v.error, v.terminal_url, v.image_label].join('~')).join('|');
 }
 
 function render(force) {
@@ -175,6 +199,41 @@ async function refresh() {
     state.vms = await api('/api/vms');
     render();
   } catch (e) { /* server restarting; next poll retries */ }
+}
+
+/* Rename in place: the card's name becomes an input. The guest's own hostname
+   was fixed when it booted and cannot follow, so this renames the playground,
+   not the machine inside it. */
+function beginRename(card, vm) {
+  if (!card || !vm) return;
+  const holder = card.querySelector('.card-name span');
+  if (!holder) return;
+  const input = document.createElement('input');
+  input.className = 'name-edit';
+  input.value = vm.name;
+  input.maxLength = 32;
+  holder.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return;
+    settled = true;
+    const next = input.value.trim();
+    if (save && next && next !== vm.name) {
+      try {
+        await api('/api/vms/' + vm.id, { method: 'PATCH', body: JSON.stringify({ name: next }) });
+      } catch (err) { toast('Rename failed: ' + err.message, 'err'); }
+    }
+    await refresh();
+    render(true);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
 }
 
 /* ── host banner ────────────────────────────────────────────────── */
@@ -466,7 +525,21 @@ function init() {
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const id = btn.closest('.card').dataset.id;
+    const vm = state.vms.find((v) => v.id === id);
     if (btn.dataset.act === 'console') return openConsole(id);
+    if (btn.dataset.act === 'rename') return beginRename(btn.closest('.card'), vm);
+    if (btn.dataset.act === 'stop' || btn.dataset.act === 'start') {
+      const go = btn.dataset.act;
+      btn.disabled = true;
+      btn.textContent = go === 'stop' ? 'Stopping…' : 'Starting…';
+      try {
+        await api(`/api/vms/${id}/${go}`, { method: 'POST' });
+        toast(go === 'stop' ? 'Stopped — disk kept' : 'Started');
+      } catch (err) { toast((go === 'stop' ? 'Stop' : 'Start') + ' failed: ' + err.message, 'err'); }
+      await refresh();
+      render(true);
+      return;
+    }
     btn.disabled = true;
     try {
       if (state.open === id) closeConsole();
@@ -526,6 +599,8 @@ function init() {
     if (!$('#overlay').hidden) closeConsole();
   });
 
+  $('#osSelect').addEventListener('change', showOsNote);
+  loadImages();
   updateForm();
   api('/api/host').then(renderHost).catch(() => toast('Cannot reach the server', 'err'));
   refresh();

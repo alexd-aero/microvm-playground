@@ -13,6 +13,7 @@ from typing import Optional
 from . import config as C
 from . import net
 from . import ttyd as _ttyd
+from . import catalog
 from .models import TTL_CHOICES, CreateVM, HostInfo, VMView
 
 ADJECTIVES = ["brisk", "amber", "quiet", "lucid", "nimble", "vivid", "candid",
@@ -100,7 +101,14 @@ class Record:
             created_at=self.created_at, boot_ms=getattr(self.vm, "boot_ms", None),
             expires_at=self.expires_at, error=self.error,
             terminal_url=self.terminal_url,
+            image=self.spec.image, image_label=self.image_label,
+            # Stopping only makes sense for something that is not on a timer:
+            # a VM that will be destroyed at expiry gains nothing from being
+            # paused, and pausing it would silently outlive its own deadline.
+            can_suspend=self.spec.ttl == "never",
         )
+
+    image_label: Optional[str] = None
 
     @property
     def terminal_url(self) -> Optional[str]:
@@ -212,6 +220,11 @@ class Manager:
                     problems.append("missing host tool: " + tool)
             accel = "kvm" if kvm else None
 
+        if os.name != "nt" and C.USE_TTYD != "off" and not _ttyd.available():
+            notes.append("ttyd is not installed, so the built-in terminal is the only "
+                         "option. Install it for the second choice: "
+                         "sudo bash tools/get-ttyd.sh")
+
         return HostInfo(
             mode=self.backend,
             kvm=kvm, firecracker=fc_version, qemu=qemu_version, accel=accel,
@@ -243,17 +256,24 @@ class Manager:
 
     def _make_vm(self, vm_id: str, slot: int, spec: CreateVM, name: str):
         disk = max(spec.disk_gb, self.min_disk_gb())
+        img = catalog.resolve(self.backend, spec.image)
         if self.backend == "mock":
             from .mock import MockVM
             return MockVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name)
         if self.backend == "container":
             from .container import ContainerVM
-            return ContainerVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name)
+            return ContainerVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name, img)
         if self.backend == "qemu":
             from .qemu import QemuVM
-            return QemuVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name)
+            return QemuVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name, img)
         from .firecracker import FirecrackerVM
-        return FirecrackerVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name)
+        return FirecrackerVM(vm_id, slot, spec.vcpus, spec.mem_mib, disk, name, img)
+
+    def _image_label(self, image_id: str) -> Optional[str]:
+        for item in catalog.list_images(self.backend):
+            if item["id"] == image_id:
+                return item["label"]
+        return None
 
     async def create(self, spec: CreateVM) -> Record:
         async with self._lock:
@@ -269,6 +289,7 @@ class Manager:
         self._vms[vm_id] = rec
 
         try:
+            rec.image_label = self._image_label(spec.image)
             rec.vm = self._make_vm(vm_id, slot, spec, name)
             await rec.vm.start()
             rec.state = "running"
@@ -283,6 +304,58 @@ class Manager:
                 if rec.vm is not None:
                     await rec.vm.stop(graceful=False)
             self._slots.discard(slot)
+        return rec
+
+    # ------------------------------------------------------- rename / suspend
+    async def rename(self, vm_id: str, name: str) -> Optional[Record]:
+        rec = self._vms.get(vm_id)
+        if rec is None:
+            return None
+        rec.name = name
+        # The guest's own hostname was fixed at boot and cannot follow; this is
+        # the label you see in the UI.
+        with contextlib.suppress(Exception):
+            if rec.vm is not None:
+                rec.vm.name = name
+        return rec
+
+    async def suspend(self, vm_id: str) -> Optional[Record]:
+        rec = self._vms.get(vm_id)
+        if rec is None or rec.vm is None:
+            return None
+        if rec.state != "running":
+            return rec
+        if not rec.view().can_suspend:
+            raise RuntimeError("only playgrounds with auto-destroy set to 'never' "
+                               "can be stopped -- one on a timer would outlive it")
+        rec.state = "stopping"
+        from . import ttyd
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(ttyd.stop_for, vm_id)
+        try:
+            await rec.vm.suspend()
+            rec.state = "stopped"
+        except Exception as exc:
+            rec.state = "error"
+            rec.error = str(exc)
+        return rec
+
+    async def resume(self, vm_id: str) -> Optional[Record]:
+        rec = self._vms.get(vm_id)
+        if rec is None or rec.vm is None:
+            return None
+        if rec.state == "running":
+            return rec
+        rec.state = "starting"
+        rec.error = None
+        try:
+            await rec.vm.resume()
+            rec.state = "running"
+            from . import ttyd
+            await asyncio.to_thread(ttyd.start_for, vm_id, C.RUNTIME_PORT)
+        except Exception as exc:
+            rec.state = "error"
+            rec.error = str(exc)
         return rec
 
     # ---------------------------------------------------------------- destroy

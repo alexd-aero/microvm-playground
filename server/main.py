@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from . import config as C
 from . import ttyd
 from .manager import Manager
-from .models import CreateVM
+from . import catalog
+from .models import CreateVM, RenameVM
 
 manager = Manager()
 
@@ -111,6 +112,42 @@ async def create_vm(spec: CreateVM):
         raise HTTPException(status_code=409, detail=str(exc))
     if rec.state == "error":
         return JSONResponse(status_code=500, content=json.loads(rec.view().model_dump_json()))
+    return rec.view()
+
+
+@app.get("/api/images")
+async def images():
+    """Operating systems this host can launch, with whether they are ready."""
+    return catalog.list_images(manager.backend)
+
+
+@app.patch("/api/vms/{vm_id}")
+async def rename_vm(vm_id: str, body: RenameVM):
+    rec = await manager.rename(vm_id, body.name)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="no such playground")
+    return rec.view()
+
+
+@app.post("/api/vms/{vm_id}/stop")
+async def stop_vm(vm_id: str):
+    try:
+        rec = await manager.suspend(vm_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if rec is None:
+        raise HTTPException(status_code=404, detail="no such playground")
+    return rec.view()
+
+
+@app.post("/api/vms/{vm_id}/start")
+async def start_vm(vm_id: str):
+    rec = await manager.resume(vm_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="no such playground")
+    if rec.state == "error":
+        return JSONResponse(status_code=500,
+                            content=json.loads(rec.view().model_dump_json()))
     return rec.view()
 
 

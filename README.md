@@ -69,6 +69,34 @@ option is just an extra click. That is the normal case on **Windows**, where
 `ttyd` has no practical build, so the built-in console is used and the footer
 says so. `MVMP_TTYD_ENABLE=off` forces the built-in one everywhere.
 
+## Choosing an OS
+
+The create panel lists what this host can actually launch, from `/api/images`.
+
+For the container backend that is a curated set — the project's own Debian image
+with the full toolset, plus stock Debian, Ubuntu, Alpine, Fedora, Arch and
+Rocky. Anything not pulled yet is marked *downloads first*, because the first
+launch of it pays for a `docker pull` and silence would look like a hang. The
+warm pool only holds the default image, so a different OS is started for real
+rather than adopted.
+
+For the VM backends the list is simply the disk images sitting in the images
+directory. Drop another `.qcow2` (QEMU) or `.ext4` (Firecracker) in there and it
+appears in the UI with no code change.
+
+## Stopping and starting
+
+A playground with auto-destroy set to **never** gets Stop and Start buttons, and
+its disk survives in between: `docker stop` keeps the container's writable
+layer, and the VM backends keep their overlay and relaunch against it.
+
+Playgrounds on a timer deliberately cannot be stopped — the API returns 409.
+Pausing something that is scheduled for destruction just lets it outlive its own
+deadline, which is the opposite of what a disposable environment is for.
+
+Names can be changed at any time with the pencil on the card. That renames the
+*playground*, not the machine: the guest's hostname was fixed when it booted.
+
 ## Backends
 
 Selected automatically by *readiness*, not just capability; override with

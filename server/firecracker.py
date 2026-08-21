@@ -34,7 +34,7 @@ class FirecrackerVM:
     """Owns the lifecycle of exactly one microVM."""
 
     def __init__(self, vm_id: str, slot: int, vcpus: int, mem_mib: int, disk_gb: int,
-                 name: str = ""):
+                 name: str = "", image: Optional[str] = None):
         self.id = vm_id
         self.name = name
         self.slot = slot
@@ -45,6 +45,7 @@ class FirecrackerVM:
         self.dir = C.VMS_DIR / vm_id
         self.api_sock = self.dir / "api.sock"
         self.rootfs = self.dir / "rootfs.ext4"
+        self.base_rootfs = Path(image) if image else C.BASE_ROOTFS
         self.log_path = self.dir / "firecracker.log"
 
         self.proc: Optional[subprocess.Popen] = None
@@ -69,7 +70,8 @@ class FirecrackerVM:
         self.dir.mkdir(parents=True, exist_ok=True)
         t0 = time.monotonic()
 
-        await asyncio.to_thread(images.provision, self.rootfs, self.disk_gb)
+        await asyncio.to_thread(images.provision, self.rootfs, self.disk_gb,
+                                self.base_rootfs)
         self.ip, self.gateway = await asyncio.to_thread(net.setup, self.slot)
 
         self._spawn()
@@ -188,6 +190,41 @@ class FirecrackerVM:
         if self._master_fd is not None and self._loop is not None:
             with contextlib.suppress(Exception):
                 self._loop.remove_reader(self._master_fd)
+
+    async def _halt(self, graceful: bool = True) -> None:
+        if self.proc and self.proc.poll() is None:
+            if graceful:
+                with contextlib.suppress(Exception):
+                    await self._api("PUT", "/actions", {"action_type": "SendCtrlAltDel"})
+                for _ in range(50):
+                    if self.proc.poll() is not None:
+                        break
+                    await asyncio.sleep(0.1)
+            if self.proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    self.proc.wait(timeout=3)
+        self._detach_reader()
+        if self._master_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(self._master_fd)
+            self._master_fd = None
+
+    async def suspend(self) -> None:
+        """Halt the VM but keep its rootfs and its tap device."""
+        await self._halt(graceful=True)
+        self.console.close()
+
+    async def resume(self) -> None:
+        if not self.rootfs.exists():
+            raise VMMError("this playground's disk is gone; it cannot be resumed")
+        self._loop = asyncio.get_running_loop()
+        self.console = ConsoleHub()
+        self._spawn()
+        await self._wait_for_api()
+        await self._configure()
+        await self._api("PUT", "/actions", {"action_type": "InstanceStart"})
 
     async def stop(self, graceful: bool = True) -> None:
         if self.proc and self.proc.poll() is None:

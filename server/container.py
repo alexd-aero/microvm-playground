@@ -160,9 +160,10 @@ class ContainerVM:
     """Owns the lifecycle of exactly one playground container."""
 
     def __init__(self, vm_id: str, slot: int, vcpus: int, mem_mib: int, disk_gb: int,
-                 name: str = ""):
+                 name: str = "", image: Optional[str] = None):
         self.id = vm_id
         self.name = name or vm_id[:8]
+        self.image = image or C.CONTAINER_IMAGE
         self.slot = slot
         self.vcpus = vcpus
         self.mem_mib = mem_mib
@@ -187,7 +188,7 @@ class ContainerVM:
                 "On Windows use the QEMU backend.")
         if not has_docker():
             raise ContainerError("Docker is not available or its daemon is not running.")
-        if not image_present():
+        if self.image == C.CONTAINER_IMAGE and not image_present():
             raise ContainerError(
                 "Image %s not built. Run: docker build -t %s docker/"
                 % (C.CONTAINER_IMAGE, C.CONTAINER_IMAGE))
@@ -195,7 +196,13 @@ class ContainerVM:
         self._loop = asyncio.get_running_loop()
         t0 = time.monotonic()
 
-        self.cid, from_pool = await pool().acquire()
+        if self.image == C.CONTAINER_IMAGE:
+            self.cid, _from_pool = await pool().acquire()
+        else:
+            # The warm pool holds the default image only, so a different OS has
+            # to be started for real. Docker pulls it on first use, which is why
+            # the catalogue marks un-pulled images as not ready.
+            self.cid = await asyncio.to_thread(self._create_own)
 
         # Apply this playground's limits. Pool members were created with the
         # defaults, so adopting one means resizing it in place.
@@ -210,6 +217,19 @@ class ContainerVM:
         self.ip = await asyncio.to_thread(self._address)
         self._attach()
         self.boot_ms = int((time.monotonic() - t0) * 1000)
+
+    def _create_own(self) -> str:
+        return _run(
+            "run", "-d",
+            "--label", "mvmp=1",
+            "--hostname", "playground",
+            "--cpus", str(self.vcpus),
+            "--memory", "%dm" % self.mem_mib,
+            "--pids-limit", str(C.CONTAINER_PIDS_LIMIT),
+            "--security-opt", "no-new-privileges",
+            self.image, "sleep", "infinity",
+            timeout=600,          # includes a possible image pull
+        )
 
     def _address(self) -> Optional[str]:
         with contextlib.suppress(Exception):
@@ -232,7 +252,9 @@ class ContainerVM:
         exe = docker_bin()
         self.proc = subprocess.Popen(
             [exe, "exec", "-it", "-e", "TERM=xterm-256color",
-             "-e", "COLORTERM=truecolor", self.cid, "/bin/bash", "--login"],
+             "-e", "COLORTERM=truecolor", self.cid,
+             # Alpine and other minimal images have no bash.
+             "/bin/sh", "-lc", "exec /bin/bash --login 2>/dev/null || exec /bin/sh -l"],
             stdin=slave, stdout=slave, stderr=slave,
             start_new_session=True, close_fds=True,
         )
@@ -284,6 +306,35 @@ class ContainerVM:
         if self._master_fd is not None and self._loop is not None:
             with contextlib.suppress(Exception):
                 self._loop.remove_reader(self._master_fd)
+
+    def _detach_console(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            with contextlib.suppress(Exception):
+                self.proc.kill()
+        self._detach_reader()
+        if self._master_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(self._master_fd)
+            self._master_fd = None
+        self.console.close()
+
+    async def suspend(self) -> None:
+        """Stop the container without removing it: `docker stop` keeps the
+        writable layer, so everything the user wrote is still there on start."""
+        self._stopped = True
+        self._detach_console()
+        if self.cid:
+            await asyncio.to_thread(_run, "stop", "-t", "5", self.cid, timeout=90)
+
+    async def resume(self) -> None:
+        if not self.cid:
+            raise ContainerError("this playground no longer exists")
+        self._loop = asyncio.get_running_loop()
+        await asyncio.to_thread(_run, "start", self.cid, timeout=90)
+        self.console = ConsoleHub()          # the old hub was closed on suspend
+        self.ip = await asyncio.to_thread(self._address)
+        self._stopped = False
+        self._attach()
 
     async def stop(self, graceful: bool = True) -> None:
         self._stopped = True

@@ -93,7 +93,7 @@ class QemuVM:
     """Owns the lifecycle of exactly one QEMU guest."""
 
     def __init__(self, vm_id: str, slot: int, vcpus: int, mem_mib: int, disk_gb: int,
-                 name: str = ""):
+                 name: str = "", image: Optional[str] = None):
         self.id = vm_id
         self.name = name or vm_id[:8]
         self.slot = slot
@@ -103,6 +103,7 @@ class QemuVM:
 
         self.dir = C.VMS_DIR / vm_id
         self.overlay = self.dir / "disk.qcow2"
+        self.base_image = Path(image) if image else C.BASE_IMAGE
 
         self.proc: Optional[subprocess.Popen] = None
         self.console = ConsoleHub()
@@ -130,14 +131,24 @@ class QemuVM:
                 "SoftwareFreedomConservancy.QEMU   (then restart the server)")
         if not qemu_img:
             raise QemuError("qemu-img not found next to " + qemu)
-        if not C.BASE_IMAGE.exists():
-            raise QemuError("golden image missing at %s -- run setup.ps1" % C.BASE_IMAGE)
+        if not self.base_image.exists():
+            raise QemuError("image missing at %s -- run setup.ps1" % self.base_image)
 
         self.accel = detect_accelerator(qemu)
         self.dir.mkdir(parents=True, exist_ok=True)
-        t0 = time.monotonic()
 
         await self._make_overlay(qemu_img)
+        await self._launch(qemu)
+
+    async def _launch(self, qemu: str) -> None:
+        """Bring the VM up against whatever disk is already on the filesystem.
+
+        Split out of start() so resume() can reuse it: a suspended playground
+        keeps its overlay, so coming back is exactly this minus the disk
+        creation.
+        """
+        t0 = time.monotonic()
+        self._connected = asyncio.Event()
 
         # Both channels: we listen, QEMU dials out. No races, no port guessing.
         loop = asyncio.get_running_loop()
@@ -165,7 +176,7 @@ class QemuVM:
     async def _make_overlay(self, qemu_img: str) -> None:
         """Copy-on-write clone of the golden image -- instant, near-zero bytes."""
         args = [qemu_img, "create", "-q", "-f", "qcow2",
-                "-F", "qcow2", "-b", str(C.BASE_IMAGE), str(self.overlay)]
+                "-F", "qcow2", "-b", str(self.base_image), str(self.overlay)]
         target_gb = max(self.disk_gb, C.base_image_gb())
         args.append("%dG" % target_gb)
         p = await asyncio.to_thread(
@@ -275,7 +286,8 @@ class QemuVM:
         self.write(("stty rows %d cols %d\n" % (int(rows), int(cols))).encode())
 
     # -------------------------------------------------------------- teardown
-    async def stop(self, graceful: bool = True) -> None:
+    async def _halt(self, graceful: bool = True) -> None:
+        """Stop the VM process and release its channels, leaving the disk."""
         if self.proc and self.proc.poll() is None:
             if graceful:
                 await self._qmp_cmd("system_powerdown")     # ACPI, guest halts cleanly
@@ -303,8 +315,29 @@ class QemuVM:
                 with contextlib.suppress(Exception):
                     srv.close()
 
+        self._tasks = []
+        self._ser_w = self._qmp_w = None
+        self._serial_srv = self._qmp_srv = None
+
+    async def suspend(self) -> None:
+        """Shut the guest down cleanly but keep its disk, so it can come back."""
+        await self._halt(graceful=True)
         self.console.close()
-        # The overlay is disposable by definition -- take the whole directory.
+
+    async def resume(self) -> None:
+        qemu = find_binary(C.QEMU_SYSTEM)
+        if not qemu:
+            raise QemuError("QEMU not found")
+        if not self.overlay.exists():
+            raise QemuError("this playground's disk is gone; it cannot be resumed")
+        self.accel = detect_accelerator(qemu)
+        self.console = ConsoleHub()      # the old hub was closed on suspend
+        await self._launch(qemu)
+
+    async def stop(self, graceful: bool = True) -> None:
+        await self._halt(graceful)
+        self.console.close()
+        # Destroying is the disposable path: take the whole directory.
         await asyncio.to_thread(shutil.rmtree, self.dir, True)
 
     @property

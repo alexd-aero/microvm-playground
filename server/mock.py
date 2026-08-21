@@ -474,6 +474,19 @@ class MockVM:
         self._emit("vda  254:0    0  %4dG  0 disk /" % self.disk_gb)
 
     # ---------------------------------------------------------------- teardown
+    async def suspend(self) -> None:
+        self._running = False
+        self._ready = False
+        if self._task:
+            self._task.cancel()
+        self.console.close()
+
+    async def resume(self) -> None:
+        self.console = ConsoleHub()
+        self._running = True
+        self._started = time.time()
+        self._task = asyncio.create_task(self._boot())
+
     async def stop(self, graceful: bool = True) -> None:
         self._running = False
         if self._task:

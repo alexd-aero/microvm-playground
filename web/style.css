@@ -359,3 +359,30 @@ button{ font:inherit; color:inherit; }
   color:var(--ink-faint); font-size:11.5px; text-decoration:underline;
 }
 .linky:hover{ color:var(--accent); }
+
+/* ── OS select ──────────────────────────────────────────────────── */
+.select{
+  width:100%; padding:10px 12px; border-radius:var(--r-sm);
+  background:var(--surface-2); border:1px solid var(--line-soft);
+  color:var(--ink); font:inherit; font-size:13px; outline:none; cursor:pointer;
+  appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--ink-faint) 50%),
+                   linear-gradient(135deg,var(--ink-faint) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size:5px 5px, 5px 5px;
+  background-repeat:no-repeat;
+}
+.select:focus{ border-color:var(--accent); }
+.select option{ background:var(--surface-2); color:var(--ink); }
+.os-note{ margin:6px 2px 0; font-size:11px; color:var(--ink-faint); line-height:1.5; }
+
+/* inline rename */
+.name-edit{
+  font:inherit; font-size:14px; font-weight:600; color:var(--ink);
+  background:var(--surface-2); border:1px solid var(--accent);
+  border-radius:6px; padding:1px 6px; width:100%; min-width:0; outline:none;
+}
+.icon-btn.tiny{ width:26px; height:26px; border-radius:7px; }
+.icon-btn.tiny svg{ width:13px; height:13px; }
+.card-name .icon-btn{ opacity:0; transition:opacity .12s; }
+.card:hover .card-name .icon-btn{ opacity:1; }

@@ -4,6 +4,7 @@ Layout, one /30 per VM slot:
     <base>.<slot>.1  host side  (the tap device)
     <base>.<slot>.2  guest side (eth0, configured via kernel ip= param)
 """
+import re
 import subprocess
 from typing import Optional
 
@@ -41,6 +42,21 @@ def slot_addrs(slot: int) -> tuple[str, str, str]:
     return host, guest, net
 
 
+def egress_mtu(egress: str) -> int:
+    """MTU of the interface we NAT out of.
+
+    This matters more than it looks. A tap device defaults to 1500, but the
+    host's own egress is often smaller -- 1450 or less inside a Codespace,
+    a container, or any overlay network. The guest then emits frames the path
+    cannot carry: small requests succeed, anything that fills a TCP window
+    stalls, and it presents as "the internet is broken" rather than as an MTU
+    problem.
+    """
+    p = _run("ip", "-o", "link", "show", "dev", egress, check=False)
+    m = re.search(r"mtu\s+(\d+)", p.stdout or "")
+    return int(m.group(1)) if m else 1500
+
+
 def tap_name(slot: int) -> str:
     return f"{C.TAP_PREFIX}{slot}"
 
@@ -55,15 +71,27 @@ def enable_forwarding() -> None:
 
 # iptables rules are tagged with a comment so teardown is surgical -- we never
 # flush the user's own chains.
-def _rule_args(slot: int, egress: str) -> list[list[str]]:
+def _rule_args(slot: int, egress: str, mtu: int = 1500) -> list[list[str]]:
     tap = tap_name(slot)
     _, _, net = slot_addrs(slot)
     tag = ["-m", "comment", "--comment", f"mvmp:{slot}"]
+    # IPv4 header + TCP header = 40 bytes.
+    mss = max(536, mtu - 40)
     return [
         ["-t", "nat", "POSTROUTING", "-s", net, "-o", egress, "-j", "MASQUERADE", *tag],
         ["-t", "filter", "FORWARD", "-i", tap, "-o", egress, "-j", "ACCEPT", *tag],
         ["-t", "filter", "FORWARD", "-o", tap, "-i", egress,
          "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT", *tag],
+        # Rewrite the MSS the guest advertises so it never builds a segment the
+        # path cannot carry. --set-mss rather than --clamp-mss-to-pmtu because
+        # nested container networks frequently cannot discover a PMTU at all,
+        # and a clamp that finds nothing silently does nothing.
+        ["-t", "mangle", "FORWARD", "-o", egress, "-p", "tcp",
+         "--tcp-flags", "SYN,RST", "SYN", "-s", net,
+         "-j", "TCPMSS", "--set-mss", str(mss), *tag],
+        ["-t", "mangle", "FORWARD", "-o", tap, "-p", "tcp",
+         "--tcp-flags", "SYN,RST", "SYN", "-d", net,
+         "-j", "TCPMSS", "--set-mss", str(mss), *tag],
     ]
 
 
@@ -80,13 +108,19 @@ def setup(slot: int, egress: Optional[str] = None) -> tuple[str, str]:
 
     teardown(slot, egress)  # idempotent: clear any stale leftovers
 
+    mtu = egress_mtu(egress)
     _run("ip", "tuntap", "add", "dev", tap, "mode", "tap")
     _run("ip", "addr", "add", f"{host_ip}/30", "dev", tap)
+    _run("ip", "link", "set", "dev", tap, "mtu", str(mtu), check=False)
     _run("ip", "link", "set", "dev", tap, "up")
 
     enable_forwarding()
-    for rule in _rule_args(slot, egress):
-        _iptables("-A", rule)
+    for rule in _rule_args(slot, egress, mtu):
+        # Insert rather than append: Docker sets the FORWARD policy to DROP and
+        # installs its own chains, and an appended rule can sit behind one that
+        # already decided. These are scoped to this tap, so jumping the queue is
+        # safe.
+        _iptables("-I" if rule[1] == "filter" else "-A", rule)
     return guest_ip, host_ip
 
 
@@ -97,7 +131,7 @@ def teardown(slot: int, egress: Optional[str] = None) -> None:
     except NetError:
         egress = None
     if egress:
-        for rule in _rule_args(slot, egress):
+        for rule in _rule_args(slot, egress, egress_mtu(egress)):
             # -D repeatedly in case a crash left duplicates behind
             for _ in range(4):
                 p = _run("iptables", "-t", rule[1], "-D", rule[2], *rule[3:], check=False)

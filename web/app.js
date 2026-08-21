@@ -215,8 +215,11 @@ function renderHost(h) {
 
   const foot = $('.foot-hint');
   if (foot) {
+    // `ttyd --version` prints "ttyd version 1.7.7"; take the number, not the
+    // word, or the footer proudly reads "ttyd version".
+    const tv = (h.ttyd || '').match(/(\d+\.\d[\d.]*)/);
     foot.innerHTML = h.terminal === 'ttyd'
-      ? `terminal: <code>${escape((h.ttyd || 'ttyd').split(' ').slice(0, 2).join(' '))}</code> · UTF-8 · truecolor`
+      ? `terminal: <code>ttyd${tv ? ' ' + escape(tv[1]) : ''}</code> · UTF-8 · truecolor`
       : 'terminal: <code>built-in</code> · UTF-8 · xterm-256color · truecolor';
   }
 

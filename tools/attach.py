@@ -117,11 +117,18 @@ async def main() -> int:
             await ws.send(b"clear\nclear\n")
 
     tasks = [asyncio.create_task(t()) for t in (to_playground, from_playground)]
-    tasks.append(asyncio.create_task(clean_screen()))
     if with_signal:
         tasks.append(asyncio.create_task(watch_resize()))
 
+    # Deliberately NOT in the wait set below. That set uses FIRST_COMPLETED, so
+    # anything in it finishing tears the bridge down -- and this one finishes on
+    # purpose, half a second in. Including it killed every ttyd session moments
+    # after it opened. Only tasks that should live as long as the connection
+    # belong in `tasks`.
+    housekeeping = asyncio.create_task(clean_screen())
+
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    housekeeping.cancel()
     for t in pending:
         t.cancel()
     with_closed = getattr(ws, "close", None)

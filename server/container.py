@@ -256,8 +256,14 @@ class ContainerVM:
         self.proc = subprocess.Popen(
             [exe, "exec", "-it", "-e", "TERM=xterm-256color",
              "-e", "COLORTERM=truecolor", self.cid,
-             # Alpine and other minimal images have no bash.
-             "/bin/sh", "-lc", "exec /bin/bash --login 2>/dev/null || exec /bin/sh -l"],
+             # Alpine and other minimal images have no bash, so pick the shell
+             # before exec'ing it. Note there is no stderr redirect here: bash
+             # decides it is interactive only when stdin *and stderr* are both
+             # terminals, so sending stderr to /dev/null silently costs you the
+             # prompt -- the login profile still runs, so you get the MOTD and
+             # then nothing.
+             "/bin/sh", "-c",
+             "if command -v bash >/dev/null 2>&1; then exec bash --login; fi; exec sh -l"],
             stdin=slave, stdout=slave, stderr=slave,
             start_new_session=True, close_fds=True,
         )
